@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets Buttons
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Add "Requests" and "Assets" buttons for the shown user (works on task/request forms + user profile page)
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
