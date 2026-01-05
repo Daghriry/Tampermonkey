@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Qiddiya - User Requests & Assets Buttons
+// @name         Qiddiya - User Requests & Assets & Accessories Buttons
 // @namespace    http://tampermonkey.net/
 // @version      1.5
-// @description  Add "Requests" and "Assets" buttons for the shown user (works on task/request forms + user profile page)
+// @description  Add "Requests", "Assets", and "Accessories" buttons for the shown user (works on task/request forms + user profile page)
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
 // @match        https://support.qiddiya.com/sc_req_item.do*
@@ -28,12 +28,8 @@
         btn.style.lineHeight = '1.4';
         btn.style.boxShadow = 'none';
 
-        btn.addEventListener('mouseenter', () => {
-            btn.style.background = hoverColor;
-        });
-        btn.addEventListener('mouseleave', () => {
-            btn.style.background = bgColor;
-        });
+        btn.addEventListener('mouseenter', () => { btn.style.background = hoverColor; });
+        btn.addEventListener('mouseleave', () => { btn.style.background = bgColor; });
     }
 
     // sc_task / sc_req_item: "Requested for" field
@@ -41,11 +37,8 @@
         if (!doc) return null;
 
         const selectors = [
-            // sc_task → Request item → requested_for
             'input#sys_display\\.sc_task\\.request_item\\.requested_for',
             'input[name="sys_display.sc_task.request_item.requested_for"]',
-
-            // sc_req_item → requested_for
             'input#sys_display\\.sc_req_item\\.requested_for',
             'input[name="sys_display.sc_req_item.requested_for"]'
         ];
@@ -73,7 +66,6 @@
             if (el) return el;
         }
 
-        // fallback: wrapper element id (common on ServiceNow)
         const wrapper = doc.querySelector('#element\\.sys_user\\.name');
         if (wrapper) {
             const input = wrapper.querySelector('input');
@@ -84,11 +76,9 @@
     }
 
     function findTargetInputAnyContext() {
-        // Try main document first
         let el = findRequestedForInput(document) || findProfileNameInput(document);
         if (el) return el;
 
-        // Then iframes (classic nav usually uses gsft_main)
         const iframes = document.querySelectorAll('iframe');
         for (const frame of iframes) {
             try {
@@ -101,21 +91,16 @@
                 continue;
             }
         }
-
         return null;
     }
 
     function openRequestsForUser(name) {
         const n = (name || '').trim();
-        if (!n) {
-            alert('User name is empty. Please select/ensure the user name is visible.');
-            return;
-        }
+        if (!n) return alert('User name is empty. Please select/ensure the user name is visible.');
 
         const listUrl =
             'sc_req_item_list.do?' +
-            'sysparm_query=' +
-            encodeURIComponent('requested_for.nameSTARTSWITH' + n) +
+            'sysparm_query=' + encodeURIComponent('requested_for.nameSTARTSWITH' + n) +
             '&sysparm_first_row=1' +
             '&sysparm_view=sow' +
             '&sysparm_choice_query_raw=' +
@@ -130,15 +115,11 @@
 
     function openAssetsForUser(name) {
         const n = (name || '').trim();
-        if (!n) {
-            alert('User name is empty. Please select/ensure the user name is visible.');
-            return;
-        }
+        if (!n) return alert('User name is empty. Please select/ensure the user name is visible.');
 
         const assetUrl =
             'alm_hardware_list.do?' +
-            'sysparm_query=' +
-            encodeURIComponent('assigned_to.nameSTARTSWITH' + n) +
+            'sysparm_query=' + encodeURIComponent('assigned_to.nameSTARTSWITH' + n) +
             '&sysparm_first_row=1' +
             '&sysparm_view=' +
             '&sysparm_choice_query_raw=' +
@@ -147,6 +128,26 @@
         const fullUrl =
             'https://support.qiddiya.com/now/nav/ui/classic/params/target/' +
             encodeURIComponent(assetUrl);
+
+        window.open(fullUrl, '_blank');
+    }
+
+    // NEW: Accessories list for user (cmdb_ci_acc / Accessories)
+    function openAccessoriesForUser(name) {
+        const n = (name || '').trim();
+        if (!n) return alert('User name is empty. Please select/ensure the user name is visible.');
+
+        const accUrl =
+            'cmdb_ci_acc_list.do?' +
+            'sysparm_query=' + encodeURIComponent('assigned_to.nameSTARTSWITH' + n) +
+            '&sysparm_first_row=1' +
+            '&sysparm_view=' +
+            '&sysparm_choice_query_raw=' +
+            '&sysparm_list_header_search=true';
+
+        const fullUrl =
+            'https://support.qiddiya.com/now/nav/ui/classic/params/target/' +
+            encodeURIComponent(accUrl);
 
         window.open(fullUrl, '_blank');
     }
@@ -176,25 +177,35 @@
         btnAssets.title = 'Open all assets assigned to this user';
         styleButton(btnAssets, '#1F9D55', '#168243'); // green
 
+        // Accessories button (Purple)
+        const btnAcc = doc.createElement('button');
+        btnAcc.id = 'qiddiya-user-accessories-btn';
+        btnAcc.type = 'button';
+        btnAcc.textContent = 'View user accessories';
+        btnAcc.title = 'Open all accessories assigned to this user';
+        styleButton(btnAcc, '#7C3AED', '#6D28D9'); // purple (distinct)
+
         const getName = () => (targetInput.value || '').trim();
 
         btnReq.addEventListener('click', () => openRequestsForUser(getName()));
         btnAssets.addEventListener('click', () => openAssetsForUser(getName()));
+        btnAcc.addEventListener('click', () => openAccessoriesForUser(getName()));
 
         // Insert next to the input
         if (targetInput.parentElement) {
             targetInput.parentElement.appendChild(btnReq);
             targetInput.parentElement.appendChild(btnAssets);
+            targetInput.parentElement.appendChild(btnAcc);
         } else {
             targetInput.insertAdjacentElement('afterend', btnReq);
             btnReq.insertAdjacentElement('afterend', btnAssets);
+            btnAssets.insertAdjacentElement('afterend', btnAcc);
         }
     }
 
     function init() {
         tryAddButtons();
 
-        // For dynamic rendering
         const observer = new MutationObserver(() => {
             tryAddButtons();
         });
