@@ -55,7 +55,7 @@
                 return null;
             }
 
-            const mtm = machineType + model;
+            const mtm = model.startsWith(machineType) ? model : (machineType + model);
             const longSerial = '1S' + mtm + serial;
 
             return {
@@ -93,7 +93,7 @@
                 return null;
             }
 
-            const mtm = machineType + model;
+            const mtm = model.startsWith(machineType) ? model : (machineType + model);
             const longSerial = '1S' + mtm + serial;
 
             return {
