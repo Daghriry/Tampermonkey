@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons
 // @namespace    http://tampermonkey.net/
-// @version      1.5
-// @description  Add "Requests", "Assets", and "Accessories" buttons for the shown user (works on task/request forms + user profile page)
+// @version      1.6
+// @description  Add "Requests", "Assets", and "Accessories" buttons for the shown user (works on task/request forms + user profile + asset record)
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
 // @match        https://support.qiddiya.com/sc_req_item.do*
 // @match        https://support.qiddiya.com/sys_user.do*
+// @match        https://support.qiddiya.com/alm_hardware.do*
 // @match        https://support.qiddiya.com/now/nav/ui/classic/params/target/sc_req_item.do*
 // @match        https://support.qiddiya.com/now/nav/ui/classic/params/target/sys_user.do*
+// @match        https://support.qiddiya.com/now/nav/ui/classic/params/target/alm_hardware.do*
 // @grant        none
 // ==/UserScript==
 
@@ -18,8 +20,8 @@
     // Keep EXACT same sizing/shape as your previous version
     function styleButton(btn, bgColor, hoverColor) {
         btn.style.marginLeft = '8px';
-        btn.style.padding = '3px 10px';   // same as before
-        btn.style.fontSize = '11px';      // same as before
+        btn.style.padding = '3px 10px';   // keep same
+        btn.style.fontSize = '11px';      // keep same
         btn.style.cursor = 'pointer';
         btn.style.border = '1px solid transparent';
         btn.style.borderRadius = '4px';
@@ -31,6 +33,10 @@
         btn.addEventListener('mouseenter', () => { btn.style.background = hoverColor; });
         btn.addEventListener('mouseleave', () => { btn.style.background = bgColor; });
     }
+
+    // -----------------------------
+    // Find input fields (by page)
+    // -----------------------------
 
     // sc_task / sc_req_item: "Requested for" field
     function findRequestedForInput(doc) {
@@ -75,24 +81,58 @@
         return null;
     }
 
+    // alm_hardware record: "Assigned to" display field
+    function findAssetAssignedToInput(doc) {
+        if (!doc) return null;
+
+        const selectors = [
+            'input#sys_display\\.alm_hardware\\.assigned_to',
+            'input[name="sys_display.alm_hardware.assigned_to"]',
+            // some instances can have different table prefix (rare), so fallback by wrapper id:
+            '#element\\.alm_hardware\\.assigned_to input'
+        ];
+
+        for (const sel of selectors) {
+            const el = doc.querySelector(sel);
+            if (el) return el;
+        }
+        return null;
+    }
+
+    // Find target input from main doc or iframes (classic nav)
     function findTargetInputAnyContext() {
-        let el = findRequestedForInput(document) || findProfileNameInput(document);
+        // 1) main doc
+        let el =
+            findRequestedForInput(document) ||
+            findProfileNameInput(document) ||
+            findAssetAssignedToInput(document);
+
         if (el) return el;
 
+        // 2) iframes (classic nav usually uses gsft_main)
         const iframes = document.querySelectorAll('iframe');
         for (const frame of iframes) {
             try {
                 const frameDoc = frame.contentDocument || frame.contentWindow?.document;
                 if (!frameDoc) continue;
 
-                el = findRequestedForInput(frameDoc) || findProfileNameInput(frameDoc);
+                el =
+                    findRequestedForInput(frameDoc) ||
+                    findProfileNameInput(frameDoc) ||
+                    findAssetAssignedToInput(frameDoc);
+
                 if (el) return el;
             } catch (e) {
                 continue;
             }
         }
+
         return null;
     }
+
+    // -----------------------------
+    // URL openers
+    // -----------------------------
 
     function openRequestsForUser(name) {
         const n = (name || '').trim();
@@ -100,7 +140,8 @@
 
         const listUrl =
             'sc_req_item_list.do?' +
-            'sysparm_query=' + encodeURIComponent('requested_for.nameSTARTSWITH' + n) +
+            'sysparm_query=' +
+            encodeURIComponent('requested_for.nameSTARTSWITH' + n) +
             '&sysparm_first_row=1' +
             '&sysparm_view=sow' +
             '&sysparm_choice_query_raw=' +
@@ -119,7 +160,8 @@
 
         const assetUrl =
             'alm_hardware_list.do?' +
-            'sysparm_query=' + encodeURIComponent('assigned_to.nameSTARTSWITH' + n) +
+            'sysparm_query=' +
+            encodeURIComponent('assigned_to.nameSTARTSWITH' + n) +
             '&sysparm_first_row=1' +
             '&sysparm_view=' +
             '&sysparm_choice_query_raw=' +
@@ -132,14 +174,14 @@
         window.open(fullUrl, '_blank');
     }
 
-    // NEW: Accessories list for user (cmdb_ci_acc / Accessories)
     function openAccessoriesForUser(name) {
         const n = (name || '').trim();
         if (!n) return alert('User name is empty. Please select/ensure the user name is visible.');
 
         const accUrl =
             'cmdb_ci_acc_list.do?' +
-            'sysparm_query=' + encodeURIComponent('assigned_to.nameSTARTSWITH' + n) +
+            'sysparm_query=' +
+            encodeURIComponent('assigned_to.nameSTARTSWITH' + n) +
             '&sysparm_first_row=1' +
             '&sysparm_view=' +
             '&sysparm_choice_query_raw=' +
@@ -151,6 +193,10 @@
 
         window.open(fullUrl, '_blank');
     }
+
+    // -----------------------------
+    // Inject buttons
+    // -----------------------------
 
     function tryAddButtons() {
         const targetInput = findTargetInputAnyContext();
@@ -183,7 +229,7 @@
         btnAcc.type = 'button';
         btnAcc.textContent = 'View user accessories';
         btnAcc.title = 'Open all accessories assigned to this user';
-        styleButton(btnAcc, '#7C3AED', '#6D28D9'); // purple (distinct)
+        styleButton(btnAcc, '#7C3AED', '#6D28D9'); // purple
 
         const getName = () => (targetInput.value || '').trim();
 
@@ -206,6 +252,7 @@
     function init() {
         tryAddButtons();
 
+        // Handle dynamic rendering in ServiceNow
         const observer = new MutationObserver(() => {
             tryAddButtons();
         });
