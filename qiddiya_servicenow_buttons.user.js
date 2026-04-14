@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Qiddiya - User Requests & Assets & Accessories Buttons
+// @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      1.6
-// @description  Add "Requests", "Assets", and "Accessories" buttons for the shown user (works on task/request forms + user profile + asset record)
+// @version      1.9
+// @description  Add "Requests", "Assets", "Accessories" buttons for the shown user and a working Lenovo "Check Warranty" button
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
 // @match        https://support.qiddiya.com/sc_req_item.do*
@@ -11,17 +11,17 @@
 // @match        https://support.qiddiya.com/now/nav/ui/classic/params/target/sc_req_item.do*
 // @match        https://support.qiddiya.com/now/nav/ui/classic/params/target/sys_user.do*
 // @match        https://support.qiddiya.com/now/nav/ui/classic/params/target/alm_hardware.do*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      pcsupport.lenovo.com
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    // Keep EXACT same sizing/shape as your previous version
     function styleButton(btn, bgColor, hoverColor) {
         btn.style.marginLeft = '8px';
-        btn.style.padding = '3px 10px';   // keep same
-        btn.style.fontSize = '11px';      // keep same
+        btn.style.padding = '3px 10px';
+        btn.style.fontSize = '11px';
         btn.style.cursor = 'pointer';
         btn.style.border = '1px solid transparent';
         btn.style.borderRadius = '4px';
@@ -30,15 +30,15 @@
         btn.style.lineHeight = '1.4';
         btn.style.boxShadow = 'none';
 
-        btn.addEventListener('mouseenter', () => { btn.style.background = hoverColor; });
-        btn.addEventListener('mouseleave', () => { btn.style.background = bgColor; });
+        btn.addEventListener('mouseenter', () => {
+            btn.style.background = hoverColor;
+        });
+
+        btn.addEventListener('mouseleave', () => {
+            btn.style.background = bgColor;
+        });
     }
 
-    // -----------------------------
-    // Find input fields (by page)
-    // -----------------------------
-
-    // sc_task / sc_req_item: "Requested for" field
     function findRequestedForInput(doc) {
         if (!doc) return null;
 
@@ -53,10 +53,10 @@
             const el = doc.querySelector(sel);
             if (el) return el;
         }
+
         return null;
     }
 
-    // sys_user profile: user name field (anchor point)
     function findProfileNameInput(doc) {
         if (!doc) return null;
 
@@ -81,14 +81,12 @@
         return null;
     }
 
-    // alm_hardware record: "Assigned to" display field
     function findAssetAssignedToInput(doc) {
         if (!doc) return null;
 
         const selectors = [
             'input#sys_display\\.alm_hardware\\.assigned_to',
             'input[name="sys_display.alm_hardware.assigned_to"]',
-            // some instances can have different table prefix (rare), so fallback by wrapper id:
             '#element\\.alm_hardware\\.assigned_to input'
         ];
 
@@ -96,12 +94,28 @@
             const el = doc.querySelector(sel);
             if (el) return el;
         }
+
         return null;
     }
 
-    // Find target input from main doc or iframes (classic nav)
+    function findSerialNumberInput(doc) {
+        if (!doc) return null;
+
+        const selectors = [
+            'input#alm_hardware\\.serial_number',
+            'input[name="alm_hardware.serial_number"]',
+            '#element\\.alm_hardware\\.serial_number input'
+        ];
+
+        for (const sel of selectors) {
+            const el = doc.querySelector(sel);
+            if (el) return el;
+        }
+
+        return null;
+    }
+
     function findTargetInputAnyContext() {
-        // 1) main doc
         let el =
             findRequestedForInput(document) ||
             findProfileNameInput(document) ||
@@ -109,7 +123,6 @@
 
         if (el) return el;
 
-        // 2) iframes (classic nav usually uses gsft_main)
         const iframes = document.querySelectorAll('iframe');
         for (const frame of iframes) {
             try {
@@ -130,13 +143,32 @@
         return null;
     }
 
-    // -----------------------------
-    // URL openers
-    // -----------------------------
+    function findSerialInputAnyContext() {
+        let el = findSerialNumberInput(document);
+        if (el) return el;
+
+        const iframes = document.querySelectorAll('iframe');
+        for (const frame of iframes) {
+            try {
+                const frameDoc = frame.contentDocument || frame.contentWindow?.document;
+                if (!frameDoc) continue;
+
+                el = findSerialNumberInput(frameDoc);
+                if (el) return el;
+            } catch (e) {
+                continue;
+            }
+        }
+
+        return null;
+    }
 
     function openRequestsForUser(name) {
         const n = (name || '').trim();
-        if (!n) return alert('User name is empty. Please select/ensure the user name is visible.');
+        if (!n) {
+            alert('User name is empty. Please select/ensure the user name is visible.');
+            return;
+        }
 
         const listUrl =
             'sc_req_item_list.do?' +
@@ -156,7 +188,10 @@
 
     function openAssetsForUser(name) {
         const n = (name || '').trim();
-        if (!n) return alert('User name is empty. Please select/ensure the user name is visible.');
+        if (!n) {
+            alert('User name is empty. Please select/ensure the user name is visible.');
+            return;
+        }
 
         const assetUrl =
             'alm_hardware_list.do?' +
@@ -176,7 +211,10 @@
 
     function openAccessoriesForUser(name) {
         const n = (name || '').trim();
-        if (!n) return alert('User name is empty. Please select/ensure the user name is visible.');
+        if (!n) {
+            alert('User name is empty. Please select/ensure the user name is visible.');
+            return;
+        }
 
         const accUrl =
             'cmdb_ci_acc_list.do?' +
@@ -194,9 +232,74 @@
         window.open(fullUrl, '_blank');
     }
 
-    // -----------------------------
-    // Inject buttons
-    // -----------------------------
+    function getLenovoProductPath(serial) {
+        return new Promise((resolve, reject) => {
+            const s = (serial || '').trim();
+            if (!s) {
+                reject(new Error('Serial Number is empty'));
+                return;
+            }
+
+            const apiUrl =
+                'https://pcsupport.lenovo.com/us/en/api/v4/mse/getproducts?productId=' +
+                encodeURIComponent(s);
+
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: apiUrl,
+                headers: {
+                    'Accept': 'application/json'
+                },
+                onload: function (response) {
+                    try {
+                        if (response.status < 200 || response.status >= 300) {
+                            reject(new Error('Lenovo API returned status ' + response.status));
+                            return;
+                        }
+
+                        const data = JSON.parse(response.responseText);
+
+                        if (!Array.isArray(data) || !data.length || !data[0].Id) {
+                            reject(new Error('Warranty product path was not found for this serial number.'));
+                            return;
+                        }
+
+                        resolve(String(data[0].Id).toLowerCase());
+                    } catch (err) {
+                        reject(err);
+                    }
+                },
+                onerror: function () {
+                    reject(new Error('Network error while calling Lenovo API'));
+                },
+                ontimeout: function () {
+                    reject(new Error('Lenovo API request timed out'));
+                }
+            });
+        });
+    }
+
+    async function openWarranty(serial) {
+        const s = (serial || '').trim();
+        if (!s) {
+            alert('Serial Number is empty');
+            return;
+        }
+
+        try {
+            const productPath = await getLenovoProductPath(s);
+
+            const warrantyUrl =
+                'https://pcsupport.lenovo.com/us/en/products/' +
+                productPath +
+                '/warranty';
+
+            window.open(warrantyUrl, '_blank');
+        } catch (error) {
+            console.error('Warranty lookup failed:', error);
+            alert('Failed to retrieve the warranty link from Lenovo.');
+        }
+    }
 
     function tryAddButtons() {
         const targetInput = findTargetInputAnyContext();
@@ -204,61 +307,80 @@
 
         const doc = targetInput.ownerDocument;
 
-        // Avoid duplicates
-        if (doc.getElementById('qiddiya-user-requests-btn')) return;
+        if (!doc.getElementById('qiddiya-user-requests-btn')) {
+            const btnReq = doc.createElement('button');
+            btnReq.id = 'qiddiya-user-requests-btn';
+            btnReq.type = 'button';
+            btnReq.textContent = 'View user requests';
+            btnReq.title = 'Open all requests for this user';
+            styleButton(btnReq, '#1F6FEB', '#1A5FD1');
 
-        // Requests button (Blue)
-        const btnReq = doc.createElement('button');
-        btnReq.id = 'qiddiya-user-requests-btn';
-        btnReq.type = 'button';
-        btnReq.textContent = 'View user requests';
-        btnReq.title = 'Open all requests for this user';
-        styleButton(btnReq, '#1F6FEB', '#1A5FD1'); // blue
+            const btnAssets = doc.createElement('button');
+            btnAssets.id = 'qiddiya-user-assets-btn';
+            btnAssets.type = 'button';
+            btnAssets.textContent = 'View user assets';
+            btnAssets.title = 'Open all assets assigned to this user';
+            styleButton(btnAssets, '#1F9D55', '#168243');
 
-        // Assets button (Green)
-        const btnAssets = doc.createElement('button');
-        btnAssets.id = 'qiddiya-user-assets-btn';
-        btnAssets.type = 'button';
-        btnAssets.textContent = 'View user assets';
-        btnAssets.title = 'Open all assets assigned to this user';
-        styleButton(btnAssets, '#1F9D55', '#168243'); // green
+            const btnAcc = doc.createElement('button');
+            btnAcc.id = 'qiddiya-user-accessories-btn';
+            btnAcc.type = 'button';
+            btnAcc.textContent = 'View user accessories';
+            btnAcc.title = 'Open all accessories assigned to this user';
+            styleButton(btnAcc, '#7C3AED', '#6D28D9');
 
-        // Accessories button (Purple)
-        const btnAcc = doc.createElement('button');
-        btnAcc.id = 'qiddiya-user-accessories-btn';
-        btnAcc.type = 'button';
-        btnAcc.textContent = 'View user accessories';
-        btnAcc.title = 'Open all accessories assigned to this user';
-        styleButton(btnAcc, '#7C3AED', '#6D28D9'); // purple
+            const getName = () => (targetInput.value || '').trim();
 
-        const getName = () => (targetInput.value || '').trim();
+            btnReq.addEventListener('click', () => openRequestsForUser(getName()));
+            btnAssets.addEventListener('click', () => openAssetsForUser(getName()));
+            btnAcc.addEventListener('click', () => openAccessoriesForUser(getName()));
 
-        btnReq.addEventListener('click', () => openRequestsForUser(getName()));
-        btnAssets.addEventListener('click', () => openAssetsForUser(getName()));
-        btnAcc.addEventListener('click', () => openAccessoriesForUser(getName()));
+            if (targetInput.parentElement) {
+                targetInput.parentElement.appendChild(btnReq);
+                targetInput.parentElement.appendChild(btnAssets);
+                targetInput.parentElement.appendChild(btnAcc);
+            } else {
+                targetInput.insertAdjacentElement('afterend', btnReq);
+                btnReq.insertAdjacentElement('afterend', btnAssets);
+                btnAssets.insertAdjacentElement('afterend', btnAcc);
+            }
+        }
 
-        // Insert next to the input
-        if (targetInput.parentElement) {
-            targetInput.parentElement.appendChild(btnReq);
-            targetInput.parentElement.appendChild(btnAssets);
-            targetInput.parentElement.appendChild(btnAcc);
-        } else {
-            targetInput.insertAdjacentElement('afterend', btnReq);
-            btnReq.insertAdjacentElement('afterend', btnAssets);
-            btnAssets.insertAdjacentElement('afterend', btnAcc);
+        const serialInput = findSerialInputAnyContext();
+        if (serialInput && !serialInput.ownerDocument.getElementById('qiddiya-warranty-btn')) {
+            const serialDoc = serialInput.ownerDocument;
+
+            const btnWarranty = serialDoc.createElement('button');
+            btnWarranty.id = 'qiddiya-warranty-btn';
+            btnWarranty.type = 'button';
+            btnWarranty.textContent = 'Check Warranty';
+            btnWarranty.title = 'Check Lenovo Warranty';
+            styleButton(btnWarranty, '#F59E0B', '#D97706');
+
+            btnWarranty.addEventListener('click', async () => {
+                await openWarranty(serialInput.value);
+            });
+
+            if (serialInput.parentElement) {
+                serialInput.parentElement.appendChild(btnWarranty);
+            } else {
+                serialInput.insertAdjacentElement('afterend', btnWarranty);
+            }
         }
     }
 
     function init() {
         tryAddButtons();
 
-        // Handle dynamic rendering in ServiceNow
         const observer = new MutationObserver(() => {
             tryAddButtons();
         });
 
         if (document.body) {
-            observer.observe(document.body, { childList: true, subtree: true });
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
         }
     }
 
