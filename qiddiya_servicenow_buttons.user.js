@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Add "Requests", "Assets", "Accessories" buttons for the shown user, a working Lenovo "Check Warranty" button, and a Name dropdown on the accessories form
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
@@ -26,7 +26,8 @@
         'Lenovo Headset',
         'Lenova Bag',
         'Lenovo Webcam',
-        'Cables'
+        'Cables',
+        'Privacy Screen'
     ];
 
     // ─── Style helpers ────────────────────────────────────────────────────────
