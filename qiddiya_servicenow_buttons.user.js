@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.5
 // @description  Add "Requests", "Assets", "Accessories" buttons for the shown user, a working Lenovo "Check Warranty" button, and a Name dropdown on the accessories form
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
@@ -24,7 +24,7 @@
     const ACCESSORY_NAMES = [
         'Lenovo Wireless Keyboard & Mouse Combo',
         'Lenovo Headset',
-        'Lenovo Bag',
+        'Lenova Bag',
         'Lenovo Webcam',
         'Cables',
         'Privacy Screen'
@@ -241,6 +241,30 @@
         }
     }
 
+    // ─── Long Serial Calculator ────────────────────────────────────────────────
+    // Uses the same Lenovo API call we already make for warranty.
+    // Response shape: [{ Id: "21lt/thinkpad-t14s-gen-5/21lts5mp00/mp8m1234" }]
+    // Path parts (split by "/"): [0]=category, [1]=family, [2]=MTM, [3]=serial  ← 4 parts
+    // OR the product page URL shape after redirect:
+    //   /us/en/products/21lt/thinkpad-t14s-gen-5/21lts5mp00/mp8m1234/...
+    // We rebuild: 1S + MTM + shortSerial
+    function computeLongSerial(shortSerial, productPath) {
+        // productPath example: "20ld/thinkpad-x1-yoga-3rd-gen-type-20ld-20le-20lf-20lg/20les41r00/r90trt7a"
+        // parts[0]              = machineType  e.g. "20ld"
+        // parts[1]              = family name  e.g. "thinkpad-x1-yoga-..."  ← skip this
+        // parts[parts.length-2] = MTM          e.g. "20les41r00"            ← we want this
+        // parts[parts.length-1] = serial       e.g. "r90trt7a"
+        try {
+            const parts = productPath.split('/').filter(Boolean);
+            if (parts.length < 3) return null;
+            const mtm    = parts[parts.length - 2].toUpperCase();   // second-to-last = MTM
+            const serial = shortSerial.toUpperCase().trim();
+            return '1S' + mtm + serial;
+        } catch (e) {
+            return null;
+        }
+    }
+
     // ─── Accessory Name Dropdown ───────────────────────────────────────────────
     function injectAccessoryNameDropdown(nameInput) {
         const doc = nameInput.ownerDocument;
@@ -374,21 +398,164 @@
             }
         }
 
-        // Warranty button
+        // Warranty button + Auto Long Serial display
         const serialInput = findSerialInputAnyContext();
         if (serialInput && !serialInput.ownerDocument.getElementById('qiddiya-warranty-btn')) {
             const serialDoc = serialInput.ownerDocument;
+
+            // ── Warranty button ──
             const btnWarranty = serialDoc.createElement('button');
             btnWarranty.id = 'qiddiya-warranty-btn';
             btnWarranty.type = 'button';
             btnWarranty.textContent = 'Check Warranty';
             btnWarranty.title = 'Check Lenovo Warranty';
             styleButton(btnWarranty, '#F59E0B', '#D97706');
-            btnWarranty.addEventListener('click', async () => { await openWarranty(serialInput.value); });
+
+            // ── Long Serial container ──
+            const longSerialWrap = serialDoc.createElement('div');
+            longSerialWrap.id = 'qiddiya-long-serial-wrap';
+            Object.assign(longSerialWrap.style, {
+                display: 'none',
+                marginTop: '6px',
+                padding: '5px 10px',
+                background: '#1e1e2e',
+                border: '1px solid #444',
+                borderRadius: '6px',
+                fontFamily: 'monospace',
+                fontSize: '12px',
+                color: '#c9d1d9',
+                alignItems: 'center',
+                gap: '8px',
+                flexWrap: 'wrap'
+            });
+
+            const longSerialLabel = serialDoc.createElement('span');
+            longSerialLabel.textContent = 'Long Serial:';
+            longSerialLabel.style.color = '#8b949e';
+            longSerialLabel.style.marginRight = '4px';
+
+            const longSerialValue = serialDoc.createElement('span');
+            longSerialValue.id = 'qiddiya-long-serial-value';
+            longSerialValue.style.color = '#79c0ff';
+            longSerialValue.style.fontWeight = 'bold';
+            longSerialValue.style.letterSpacing = '0.5px';
+
+            const copyBtn = serialDoc.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.textContent = '📋 Copy';
+            Object.assign(copyBtn.style, {
+                marginLeft: '10px',
+                padding: '2px 8px',
+                fontSize: '11px',
+                cursor: 'pointer',
+                border: '1px solid #555',
+                borderRadius: '4px',
+                background: '#30363d',
+                color: '#c9d1d9',
+                lineHeight: '1.4',
+                display: 'none'
+            });
+            copyBtn.addEventListener('click', () => {
+                const val = longSerialValue.textContent;
+                if (!val) return;
+                navigator.clipboard.writeText(val).then(() => {
+                    copyBtn.textContent = '✅ Copied!';
+                    copyBtn.style.color = '#3fb950';
+                    setTimeout(() => { copyBtn.textContent = '📋 Copy'; copyBtn.style.color = '#c9d1d9'; }, 2000);
+                }).catch(() => {
+                    const ta = serialDoc.createElement('textarea');
+                    ta.value = val;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    serialDoc.body.appendChild(ta);
+                    ta.select();
+                    serialDoc.execCommand('copy');
+                    serialDoc.body.removeChild(ta);
+                    copyBtn.textContent = '✅ Copied!';
+                    setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
+                });
+            });
+
+            const loadingSpan = serialDoc.createElement('span');
+            loadingSpan.id = 'qiddiya-long-serial-loading';
+            loadingSpan.textContent = '⏳ جاري الجلب...';
+            loadingSpan.style.color = '#8b949e';
+            loadingSpan.style.display = 'none';
+
+            longSerialWrap.appendChild(longSerialLabel);
+            longSerialWrap.appendChild(longSerialValue);
+            longSerialWrap.appendChild(copyBtn);
+            longSerialWrap.appendChild(loadingSpan);
+
+            // ── Core fetch + display logic (auto, no click needed) ──
+            let fetchDebounce = null;
+            let lastFetchedSerial = '';
+
+            async function fetchAndShowLongSerial() {
+                const s = (serialInput.value || '').trim();
+                if (!s || s === lastFetchedSerial) return;
+                lastFetchedSerial = s;
+
+                // Show loading state
+                longSerialWrap.style.display = 'flex';
+                longSerialValue.textContent = '';
+                longSerialValue.style.color = '#79c0ff';
+                copyBtn.style.display = 'none';
+                loadingSpan.style.display = 'inline';
+
+                try {
+                    const productPath = await getLenovoProductPath(s);
+                    const longSerial = computeLongSerial(s, productPath);
+                    loadingSpan.style.display = 'none';
+                    if (longSerial) {
+                        longSerialValue.textContent = longSerial;
+                        copyBtn.style.display = 'inline-block';
+                    } else {
+                        longSerialValue.textContent = 'تعذّر حساب الـ Long Serial';
+                        longSerialValue.style.color = '#f85149';
+                    }
+                } catch (err) {
+                    loadingSpan.style.display = 'none';
+                    longSerialValue.textContent = 'خطأ: ' + err.message;
+                    longSerialValue.style.color = '#f85149';
+                    copyBtn.style.display = 'none';
+                }
+            }
+
+            // Auto-trigger when serial field changes (user types or page fills it)
+            serialInput.addEventListener('change', () => {
+                clearTimeout(fetchDebounce);
+                fetchDebounce = setTimeout(fetchAndShowLongSerial, 600);
+            });
+            serialInput.addEventListener('input', () => {
+                clearTimeout(fetchDebounce);
+                fetchDebounce = setTimeout(fetchAndShowLongSerial, 800);
+            });
+
+            // ── Warranty button still opens the page ──
+            btnWarranty.addEventListener('click', async () => {
+                const s = (serialInput.value || '').trim();
+                if (!s) { alert('Serial Number is empty'); return; }
+                try {
+                    const productPath = await getLenovoProductPath(s);
+                    window.open('https://pcsupport.lenovo.com/us/en/products/' + productPath + '/warranty', '_blank');
+                } catch (err) {
+                    alert('Failed to retrieve the warranty link from Lenovo.');
+                }
+            });
+
+            // ── Insert into page ──
             if (serialInput.parentElement) {
                 serialInput.parentElement.appendChild(btnWarranty);
+                serialInput.parentElement.insertAdjacentElement('afterend', longSerialWrap);
             } else {
                 serialInput.insertAdjacentElement('afterend', btnWarranty);
+                btnWarranty.insertAdjacentElement('afterend', longSerialWrap);
+            }
+
+            // ── Auto-run on page load if serial already filled ──
+            if ((serialInput.value || '').trim()) {
+                setTimeout(fetchAndShowLongSerial, 1000);
             }
         }
 
