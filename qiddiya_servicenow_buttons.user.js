@@ -24,7 +24,7 @@
     const ACCESSORY_NAMES = [
         'Lenovo Wireless Keyboard & Mouse Combo',
         'Lenovo Headset',
-        'Lenova Bag',
+        'Lenovo Bag',
         'Lenovo Webcam',
         'Cables',
         'Privacy Screen'
