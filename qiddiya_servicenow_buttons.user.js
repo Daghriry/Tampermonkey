@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      2.6
-// @description  Add "Requests", "Assets", "Accessories" buttons for the shown user, a working Lenovo "Check Warranty" button, and a Name dropdown on the accessories form
+// @version      2.7
+// @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, and accessory name dropdown
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
 // @match        https://support.qiddiya.com/sc_req_item.do*
@@ -15,10 +15,16 @@
 // @match        https://support.qiddiya.com/now/nav/ui/classic/params/target/cmdb_ci_acc.do*
 // @grant        GM_xmlhttpRequest
 // @connect      pcsupport.lenovo.com
+// @connect      daghriry.info
+// @connect      127.0.0.1
+// @connect      localhost
 // ==/UserScript==
 
 (function () {
     'use strict';
+
+    // Daghriry Lenovo lookup API (change for local dev, e.g. http://127.0.0.1:5000)
+    const DAGHRIRY_API_BASE = 'https://daghriry.info';
 
     // ─── Accessory name options ───────────────────────────────────────────────
     const ACCESSORY_NAMES = [
@@ -202,67 +208,94 @@
         );
     }
 
-    // ─── Warranty ─────────────────────────────────────────────────────────────
-    function getLenovoProductPath(serial) {
+    // ─── Warranty (via Daghriry API) ───────────────────────────────────────────
+    function lookupWarrantyViaApi(serial) {
         return new Promise((resolve, reject) => {
             const s = (serial || '').trim();
-            if (!s) { reject(new Error('Serial Number is empty')); return; }
+            if (!s) {
+                reject(new Error('Serial number is empty'));
+                return;
+            }
             GM_xmlhttpRequest({
-                method: 'GET',
-                url: 'https://pcsupport.lenovo.com/us/en/api/v4/mse/getproducts?productId=' + encodeURIComponent(s),
-                headers: { 'Accept': 'application/json' },
+                method: 'POST',
+                url: DAGHRIRY_API_BASE + '/api/lenovo/lookup',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                data: JSON.stringify({ serial: s }),
                 onload(response) {
                     try {
+                        const data = JSON.parse(response.responseText || '{}');
                         if (response.status < 200 || response.status >= 300) {
-                            reject(new Error('Lenovo API returned status ' + response.status)); return;
+                            reject(new Error(data.error || ('API returned status ' + response.status)));
+                            return;
                         }
-                        const data = JSON.parse(response.responseText);
-                        if (!Array.isArray(data) || !data.length || !data[0].Id) {
-                            reject(new Error('Warranty product path was not found.')); return;
-                        }
-                        resolve(String(data[0].Id).toLowerCase());
-                    } catch (err) { reject(err); }
+                        resolve(data);
+                    } catch (err) {
+                        reject(err);
+                    }
                 },
-                onerror()  { reject(new Error('Network error while calling Lenovo API')); },
-                ontimeout() { reject(new Error('Lenovo API request timed out')); }
+                onerror() { reject(new Error('Network error while calling warranty API')); },
+                ontimeout() { reject(new Error('Warranty API request timed out')); }
             });
         });
     }
 
-    async function openWarranty(serial) {
-        const s = (serial || '').trim();
-        if (!s) { alert('Serial Number is empty'); return; }
-        try {
-            const path = await getLenovoProductPath(s);
-            window.open('https://pcsupport.lenovo.com/us/en/products/' + path + '/warranty', '_blank');
-        } catch (err) {
-            console.error('Warranty lookup failed:', err);
-            alert('Failed to retrieve the warranty link from Lenovo.');
-        }
+    function formatExpiryDate(isoOrFormatted) {
+        if (!isoOrFormatted) return '';
+        const part = String(isoOrFormatted).split(' ')[0];
+        return part || '';
     }
 
-    // ─── Long Serial Calculator ────────────────────────────────────────────────
-    // Uses the same Lenovo API call we already make for warranty.
-    // Response shape: [{ Id: "21lt/thinkpad-t14s-gen-5/21lts5mp00/mp8m1234" }]
-    // Path parts (split by "/"): [0]=category, [1]=family, [2]=MTM, [3]=serial  ← 4 parts
-    // OR the product page URL shape after redirect:
-    //   /us/en/products/21lt/thinkpad-t14s-gen-5/21lts5mp00/mp8m1234/...
-    // We rebuild: 1S + MTM + shortSerial
-    function computeLongSerial(shortSerial, productPath) {
-        // productPath example: "20ld/thinkpad-x1-yoga-3rd-gen-type-20ld-20le-20lf-20lg/20les41r00/r90trt7a"
-        // parts[0]              = machineType  e.g. "20ld"
-        // parts[1]              = family name  e.g. "thinkpad-x1-yoga-..."  ← skip this
-        // parts[parts.length-2] = MTM          e.g. "20les41r00"            ← we want this
-        // parts[parts.length-1] = serial       e.g. "r90trt7a"
-        try {
-            const parts = productPath.split('/').filter(Boolean);
-            if (parts.length < 3) return null;
-            const mtm    = parts[parts.length - 2].toUpperCase();   // second-to-last = MTM
-            const serial = shortSerial.toUpperCase().trim();
-            return '1S' + mtm + serial;
-        } catch (e) {
-            return null;
+    function formatDurationPhrase(days, future) {
+        const n = Math.abs(days);
+        if (n === 0) return future ? 'today' : 'today';
+        if (n === 1) return future ? '1 day' : '1 day';
+        if (n < 60) return n + ' days';
+        const months = Math.round(n / 30);
+        if (months < 24) return months + (months === 1 ? ' month' : ' months');
+        const years = Math.round(n / 365);
+        return years + (years === 1 ? ' year' : ' years');
+    }
+
+    function buildWarrantyDisplayText(data) {
+        const days = data.days_remaining;
+        const expiry = formatExpiryDate(data.warranty_expiration);
+        const state = data.warranty_state;
+
+        if (state === 'in_warranty') {
+            let line = 'Still under warranty';
+            if (days !== null && days !== undefined && days > 0) {
+                line += ' · Expires in ' + formatDurationPhrase(days, true);
+                if (expiry) line += ' (' + expiry + ')';
+            } else if (expiry) {
+                line += ' · Expires on ' + expiry;
+            }
+            return { text: line, color: '#3fb950', state: 'in' };
         }
+
+        if (state === 'out_of_warranty') {
+            let line = 'Warranty expired';
+            if (days !== null && days !== undefined && days < 0) {
+                line += ' · Expired ' + formatDurationPhrase(days, false) + ' ago';
+            } else if (expiry) {
+                line += ' · Ended ' + expiry;
+            }
+            return { text: line, color: '#f85149', state: 'out' };
+        }
+
+        return {
+            text: data.comments || data.warranty_status || 'Warranty status unknown',
+            color: '#d29922',
+            state: 'unknown'
+        };
+    }
+
+    function openLenovoWarrantyPage(productPath) {
+        const path = (productPath || '').trim().toLowerCase();
+        if (!path) {
+            alert('Lenovo product path is not available for this serial.');
+            return;
+        }
+        window.open('https://pcsupport.lenovo.com/us/en/products/' + path + '/warranty', '_blank');
     }
 
     // ─── Accessory Name Dropdown ───────────────────────────────────────────────
@@ -403,36 +436,42 @@
         if (serialInput && !serialInput.ownerDocument.getElementById('qiddiya-warranty-btn')) {
             const serialDoc = serialInput.ownerDocument;
 
-            // ── Warranty button ──
+            // ── Verify & Open in Lenovo button ──
             const btnWarranty = serialDoc.createElement('button');
             btnWarranty.id = 'qiddiya-warranty-btn';
             btnWarranty.type = 'button';
-            btnWarranty.textContent = 'Check Warranty';
-            btnWarranty.title = 'Check Lenovo Warranty';
+            btnWarranty.textContent = 'Verify & Open in Lenovo';
+            btnWarranty.title = 'Check warranty via Daghriry API and open Lenovo warranty page';
             styleButton(btnWarranty, '#F59E0B', '#D97706');
 
-            // ── Long Serial container ──
-            const longSerialWrap = serialDoc.createElement('div');
-            longSerialWrap.id = 'qiddiya-long-serial-wrap';
-            Object.assign(longSerialWrap.style, {
+            // ── Info panel (long serial + warranty status) ──
+            const infoWrap = serialDoc.createElement('div');
+            infoWrap.id = 'qiddiya-serial-info-wrap';
+            Object.assign(infoWrap.style, {
                 display: 'none',
                 marginTop: '6px',
-                padding: '5px 10px',
+                padding: '8px 10px',
                 background: '#1e1e2e',
                 border: '1px solid #444',
                 borderRadius: '6px',
-                fontFamily: 'monospace',
                 fontSize: '12px',
                 color: '#c9d1d9',
+                flexDirection: 'column',
+                gap: '6px'
+            });
+
+            const longSerialRow = serialDoc.createElement('div');
+            Object.assign(longSerialRow.style, {
+                display: 'flex',
                 alignItems: 'center',
+                flexWrap: 'wrap',
                 gap: '8px',
-                flexWrap: 'wrap'
+                fontFamily: 'monospace'
             });
 
             const longSerialLabel = serialDoc.createElement('span');
             longSerialLabel.textContent = 'Long Serial:';
             longSerialLabel.style.color = '#8b949e';
-            longSerialLabel.style.marginRight = '4px';
 
             const longSerialValue = serialDoc.createElement('span');
             longSerialValue.id = 'qiddiya-long-serial-value';
@@ -442,9 +481,8 @@
 
             const copyBtn = serialDoc.createElement('button');
             copyBtn.type = 'button';
-            copyBtn.textContent = '📋 Copy';
+            copyBtn.textContent = 'Copy';
             Object.assign(copyBtn.style, {
-                marginLeft: '10px',
                 padding: '2px 8px',
                 fontSize: '11px',
                 cursor: 'pointer',
@@ -455,14 +493,18 @@
                 lineHeight: '1.4',
                 display: 'none'
             });
-            copyBtn.addEventListener('click', () => {
-                const val = longSerialValue.textContent;
+
+            const copyLongSerial = (val) => {
                 if (!val) return;
-                navigator.clipboard.writeText(val).then(() => {
-                    copyBtn.textContent = '✅ Copied!';
+                const onDone = () => {
+                    copyBtn.textContent = 'Copied!';
                     copyBtn.style.color = '#3fb950';
-                    setTimeout(() => { copyBtn.textContent = '📋 Copy'; copyBtn.style.color = '#c9d1d9'; }, 2000);
-                }).catch(() => {
+                    setTimeout(() => {
+                        copyBtn.textContent = 'Copy';
+                        copyBtn.style.color = '#c9d1d9';
+                    }, 2000);
+                };
+                navigator.clipboard.writeText(val).then(onDone).catch(() => {
                     const ta = serialDoc.createElement('textarea');
                     ta.value = val;
                     ta.style.position = 'fixed';
@@ -471,91 +513,146 @@
                     ta.select();
                     serialDoc.execCommand('copy');
                     serialDoc.body.removeChild(ta);
-                    copyBtn.textContent = '✅ Copied!';
-                    setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
+                    onDone();
                 });
-            });
+            };
+            copyBtn.addEventListener('click', () => copyLongSerial(longSerialValue.textContent));
 
             const loadingSpan = serialDoc.createElement('span');
-            loadingSpan.id = 'qiddiya-long-serial-loading';
-            loadingSpan.textContent = '⏳ جاري الجلب...';
+            loadingSpan.id = 'qiddiya-serial-info-loading';
+            loadingSpan.textContent = 'Loading warranty info...';
             loadingSpan.style.color = '#8b949e';
             loadingSpan.style.display = 'none';
 
-            longSerialWrap.appendChild(longSerialLabel);
-            longSerialWrap.appendChild(longSerialValue);
-            longSerialWrap.appendChild(copyBtn);
-            longSerialWrap.appendChild(loadingSpan);
+            longSerialRow.appendChild(longSerialLabel);
+            longSerialRow.appendChild(longSerialValue);
+            longSerialRow.appendChild(copyBtn);
+            longSerialRow.appendChild(loadingSpan);
 
-            // ── Core fetch + display logic (auto, no click needed) ──
+            const warrantyStatusEl = serialDoc.createElement('div');
+            warrantyStatusEl.id = 'qiddiya-warranty-status';
+            Object.assign(warrantyStatusEl.style, {
+                fontSize: '12px',
+                fontWeight: '600',
+                lineHeight: '1.5',
+                display: 'none'
+            });
+
+            infoWrap.appendChild(longSerialRow);
+            infoWrap.appendChild(warrantyStatusEl);
+
             let fetchDebounce = null;
             let lastFetchedSerial = '';
+            let lastLookupData = null;
 
-            async function fetchAndShowLongSerial() {
+            function showWarrantyStatus(display) {
+                warrantyStatusEl.style.display = 'block';
+                warrantyStatusEl.textContent = display.text;
+                warrantyStatusEl.style.color = display.color;
+            }
+
+            function hideWarrantyStatus() {
+                warrantyStatusEl.style.display = 'none';
+                warrantyStatusEl.textContent = '';
+            }
+
+            async function fetchAndShowSerialInfo() {
                 const s = (serialInput.value || '').trim();
-                if (!s || s === lastFetchedSerial) return;
+                if (!s) {
+                    infoWrap.style.display = 'none';
+                    lastFetchedSerial = '';
+                    lastLookupData = null;
+                    return;
+                }
+                if (s === lastFetchedSerial) return;
                 lastFetchedSerial = s;
+                lastLookupData = null;
 
-                // Show loading state
-                longSerialWrap.style.display = 'flex';
+                infoWrap.style.display = 'flex';
                 longSerialValue.textContent = '';
                 longSerialValue.style.color = '#79c0ff';
                 copyBtn.style.display = 'none';
+                hideWarrantyStatus();
                 loadingSpan.style.display = 'inline';
 
                 try {
-                    const productPath = await getLenovoProductPath(s);
-                    const longSerial = computeLongSerial(s, productPath);
+                    const data = await lookupWarrantyViaApi(s);
+                    lastLookupData = data;
                     loadingSpan.style.display = 'none';
-                    if (longSerial) {
-                        longSerialValue.textContent = longSerial;
+
+                    if (data.long_serial) {
+                        longSerialValue.textContent = data.long_serial;
                         copyBtn.style.display = 'inline-block';
-                    } else {
-                        longSerialValue.textContent = 'تعذّر حساب الـ Long Serial';
+                    } else if (data.status === 'not_found') {
+                        longSerialValue.textContent = 'Serial not found';
                         longSerialValue.style.color = '#f85149';
+                    } else {
+                        longSerialValue.textContent = 'Long serial unavailable';
+                        longSerialValue.style.color = '#8b949e';
+                    }
+
+                    if (data.status === 'found' || data.warranty_state !== 'unknown') {
+                        showWarrantyStatus(buildWarrantyDisplayText(data));
+                    } else if (data.status === 'not_found') {
+                        showWarrantyStatus({ text: 'Serial not found in Lenovo catalog', color: '#f85149', state: 'unknown' });
+                    } else {
+                        showWarrantyStatus(buildWarrantyDisplayText(data));
                     }
                 } catch (err) {
                     loadingSpan.style.display = 'none';
-                    longSerialValue.textContent = 'خطأ: ' + err.message;
+                    longSerialValue.textContent = 'Lookup failed';
                     longSerialValue.style.color = '#f85149';
+                    showWarrantyStatus({ text: 'Error: ' + err.message, color: '#f85149', state: 'unknown' });
                     copyBtn.style.display = 'none';
                 }
             }
 
-            // Auto-trigger when serial field changes (user types or page fills it)
             serialInput.addEventListener('change', () => {
                 clearTimeout(fetchDebounce);
-                fetchDebounce = setTimeout(fetchAndShowLongSerial, 600);
+                fetchDebounce = setTimeout(fetchAndShowSerialInfo, 600);
             });
             serialInput.addEventListener('input', () => {
                 clearTimeout(fetchDebounce);
-                fetchDebounce = setTimeout(fetchAndShowLongSerial, 800);
+                fetchDebounce = setTimeout(fetchAndShowSerialInfo, 800);
             });
 
-            // ── Warranty button still opens the page ──
             btnWarranty.addEventListener('click', async () => {
                 const s = (serialInput.value || '').trim();
-                if (!s) { alert('Serial Number is empty'); return; }
+                if (!s) {
+                    alert('Serial number is empty');
+                    return;
+                }
+                if (lastLookupData && lastLookupData.product_path && lastFetchedSerial === s) {
+                    openLenovoWarrantyPage(lastLookupData.product_path);
+                    return;
+                }
+                btnWarranty.disabled = true;
                 try {
-                    const productPath = await getLenovoProductPath(s);
-                    window.open('https://pcsupport.lenovo.com/us/en/products/' + productPath + '/warranty', '_blank');
+                    const data = await lookupWarrantyViaApi(s);
+                    lastLookupData = data;
+                    lastFetchedSerial = s;
+                    if (data.product_path) {
+                        openLenovoWarrantyPage(data.product_path);
+                    } else {
+                        alert('Lenovo product path is not available for this serial.');
+                    }
                 } catch (err) {
-                    alert('Failed to retrieve the warranty link from Lenovo.');
+                    alert('Warranty lookup failed: ' + err.message);
+                } finally {
+                    btnWarranty.disabled = false;
                 }
             });
 
-            // ── Insert into page ──
             if (serialInput.parentElement) {
                 serialInput.parentElement.appendChild(btnWarranty);
-                serialInput.parentElement.insertAdjacentElement('afterend', longSerialWrap);
+                serialInput.parentElement.insertAdjacentElement('afterend', infoWrap);
             } else {
                 serialInput.insertAdjacentElement('afterend', btnWarranty);
-                btnWarranty.insertAdjacentElement('afterend', longSerialWrap);
+                btnWarranty.insertAdjacentElement('afterend', infoWrap);
             }
 
-            // ── Auto-run on page load if serial already filled ──
             if ((serialInput.value || '').trim()) {
-                setTimeout(fetchAndShowLongSerial, 1000);
+                setTimeout(fetchAndShowSerialInfo, 1000);
             }
         }
 
