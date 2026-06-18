@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      2.7
+// @version      2.8
 // @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, and accessory name dropdown
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
@@ -295,7 +295,7 @@
             alert('Lenovo product path is not available for this serial.');
             return;
         }
-        window.open('https://pcsupport.lenovo.com/us/en/products/' + path + '/warranty', '_blank');
+        window.open('https://pcsupport.lenovo.com/sa/en/products/' + path + '/warranty', '_blank');
     }
 
     // ─── Accessory Name Dropdown ───────────────────────────────────────────────
