@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      2.8
-// @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, and accessory name dropdown
+// @version      2.9
+// @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, accessory name dropdown, and auto-mention in comment box
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
 // @match        https://support.qiddiya.com/sc_req_item.do*
@@ -130,6 +130,18 @@
             if (el) return el;
         }
         return null;
+    }
+
+    // ─── Comment textarea finder ───────────────────────────────────────────────
+    function findCommentTextarea(doc) {
+        if (!doc) return null;
+        return doc.querySelector('textarea#activity-stream-textarea') ||
+               doc.querySelector('textarea[data-as-unique-id="activity-stream-textarea"]') ||
+               doc.querySelector('textarea[data-stream-text-input="comments"]');
+    }
+
+    function findCommentTextareaAnyContext() {
+        return searchInAllContexts(findCommentTextarea);
     }
 
     // ─── Context searchers ────────────────────────────────────────────────────
@@ -384,6 +396,53 @@
         } else {
             nameInput.insertAdjacentElement('afterend', wrapper);
         }
+    }
+
+    // ─── Auto-mention in comment box ──────────────────────────────────────────
+    let mentionInjected = false;
+
+    function injectMentionIntoComment() {
+        // Only run on sc_req_item pages
+        const href = window.location.href;
+        if (!href.includes('sc_req_item')) return;
+        if (mentionInjected) return;
+
+        const nameInput = findTargetInputAnyContext();
+        if (!nameInput) return;
+
+        const userName = (nameInput.value || '').trim();
+        if (!userName) return;
+
+        const textarea = findCommentTextareaAnyContext();
+        if (!textarea) return;
+
+        const mention = `@[${userName}]`;
+
+        // Don't overwrite if already has this mention
+        if (textarea.value.includes(mention)) {
+            mentionInjected = true;
+            return;
+        }
+
+        // Set value
+        textarea.value = mention + ' ';
+
+        // Fire events so Angular ng-model picks up the change
+        ['input', 'change', 'keyup'].forEach(evtName => {
+            textarea.dispatchEvent(new Event(evtName, { bubbles: true }));
+        });
+
+        // Try to update Angular scope directly if accessible
+        try {
+            const scope = angular.element(textarea).scope(); // eslint-disable-line no-undef
+            if (scope) {
+                scope.$apply(() => {
+                    scope.inputTypeValue = textarea.value;
+                });
+            }
+        } catch (e) { /* angular not in scope, ignore */ }
+
+        mentionInjected = true;
     }
 
     // ─── Main injection ────────────────────────────────────────────────────────
@@ -661,6 +720,9 @@
         if (accNameInput) {
             injectAccessoryNameDropdown(accNameInput);
         }
+
+        // Auto-mention in comment box
+        injectMentionIntoComment();
     }
 
     function init() {
