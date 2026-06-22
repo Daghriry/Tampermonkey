@@ -146,89 +146,125 @@
 
     // ─── Mention button injection ──────────────────────────────────────────────
     function injectMentionButton() {
-        // Only on sc_req_item pages
-        if (!window.location.href.includes('sc_req_item')) return;
+    if (!window.location.href.includes('sc_req_item')) return;
 
-        const textarea = findCommentTextareaAnyContext();
-        if (!textarea) return;
+    const textarea = findCommentTextareaAnyContext();
+    if (!textarea) return;
 
-        const doc = textarea.ownerDocument;
+    const doc = textarea.ownerDocument;
 
-        // Avoid duplicate
-        if (doc.getElementById('qiddiya-mention-btn')) return;
+    if (doc.getElementById('qiddiya-mention-btn')) return;
 
-        const nameInput = findTargetInputAnyContext();
-        const userName = nameInput ? (nameInput.value || '').trim() : '';
+    const nameInput = findTargetInputAnyContext();
+    const userName = nameInput ? (nameInput.value || '').trim() : '';
 
-        // Find the Post button row or the textarea parent to anchor the @ button
-        // Try to find a sibling container near the textarea
-        const textareaParent = textarea.parentElement;
-        if (!textareaParent) return;
+    const textareaParent = textarea.parentElement;
+    if (!textareaParent) return;
 
-        const btn = doc.createElement('button');
-        btn.id = 'qiddiya-mention-btn';
-        btn.type = 'button';
-        btn.title = userName ? `Mention ${userName}` : 'Mention requested-for user';
-
-        // Dynamic label: show name if available, else generic @
-        btn.textContent = userName ? `@ ${userName}` : '@';
-
-        Object.assign(btn.style, {
-            marginTop: '6px',
-            padding: '3px 10px',
-            fontSize: '11px',
-            cursor: 'pointer',
-            border: '1px solid transparent',
-            borderRadius: '4px',
-            color: '#ffffff',
-            background: '#1F6FEB',
-            lineHeight: '1.4',
-            display: 'inline-block'
-        });
-        btn.addEventListener('mouseenter', () => { btn.style.background = '#1A5FD1'; });
-        btn.addEventListener('mouseleave', () => { btn.style.background = '#1F6FEB'; });
-
-        btn.addEventListener('click', () => {
-            // Re-read name at click time in case it changed
-            const currentNameInput = findTargetInputAnyContext();
-            const currentName = currentNameInput ? (currentNameInput.value || '').trim() : '';
-            if (!currentName) {
-                alert('User name is empty — please open a request with a "Requested for" field first.');
-                return;
-            }
-
-            const mention = `@[${currentName}]`;
-            const current = textarea.value;
-
-            // Insert at cursor position if possible, else append
-            const start = textarea.selectionStart;
-            const end = textarea.selectionEnd;
-            if (typeof start === 'number') {
-                textarea.value = current.slice(0, start) + mention + ' ' + current.slice(end);
-                textarea.selectionStart = textarea.selectionEnd = start + mention.length + 1;
-            } else {
-                textarea.value = current ? current + '\n' + mention + ' ' : mention + ' ';
-            }
-
-            textarea.focus();
-
-            // Fire events so Angular ng-model picks up the value
-            ['input', 'change', 'keyup'].forEach(evtName => {
-                textarea.dispatchEvent(new Event(evtName, { bubbles: true }));
-            });
-
-            // Try Angular scope update
-            try {
-                const scope = angular.element(textarea).scope(); // eslint-disable-line no-undef
-                if (scope) {
-                    scope.$apply(() => { scope.inputTypeValue = textarea.value; });
-                }
-            } catch (e) { /* angular not accessible */ }
+    function triggerTextareaEvents() {
+        ['input', 'change', 'keyup'].forEach(evtName => {
+            textarea.dispatchEvent(new Event(evtName, { bubbles: true }));
         });
 
-        // Insert the button right after the textarea's parent container
-        textareaParent.insertAdjacentElement('afterend', btn);
+        try {
+            const scope = angular.element(textarea).scope(); // eslint-disable-line no-undef
+            if (scope) {
+                scope.$apply(() => { scope.inputTypeValue = textarea.value; });
+            }
+        } catch (e) { /* angular not accessible */ }
     }
+
+    function insertText(text) {
+        const current = textarea.value || '';
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+
+        if (typeof start === 'number') {
+            textarea.value = current.slice(0, start) + text + current.slice(end);
+            textarea.selectionStart = textarea.selectionEnd = start + text.length;
+        } else {
+            textarea.value = current ? current + '\n' + text : text;
+        }
+
+        textarea.focus();
+        triggerTextareaEvents();
+    }
+
+    const btn = doc.createElement('button');
+    btn.id = 'qiddiya-mention-btn';
+    btn.type = 'button';
+    btn.title = userName ? `Mention ${userName}` : 'Mention requested-for user';
+    btn.textContent = userName ? `@ ${userName}` : '@';
+
+    Object.assign(btn.style, {
+        marginTop: '6px',
+        padding: '3px 10px',
+        fontSize: '11px',
+        cursor: 'pointer',
+        border: '1px solid transparent',
+        borderRadius: '4px',
+        color: '#ffffff',
+        background: '#1F6FEB',
+        lineHeight: '1.4',
+        display: 'inline-block'
+    });
+
+    btn.addEventListener('mouseenter', () => { btn.style.background = '#1A5FD1'; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = '#1F6FEB'; });
+
+    btn.addEventListener('click', () => {
+        const currentNameInput = findTargetInputAnyContext();
+        const currentName = currentNameInput ? (currentNameInput.value || '').trim() : '';
+
+        if (!currentName) {
+            alert('User name is empty — please open a request with a "Requested for" field first.');
+            return;
+        }
+
+        insertText(`@[${currentName}] `);
+    });
+
+    const hodBtn = doc.createElement('button');
+    hodBtn.id = 'qiddiya-hod-approval-btn';
+    hodBtn.type = 'button';
+    hodBtn.title = 'Insert HoD approval reply';
+    hodBtn.textContent = 'HoD';
+
+    Object.assign(hodBtn.style, {
+        marginTop: '6px',
+        marginLeft: '6px',
+        padding: '3px 10px',
+        fontSize: '11px',
+        cursor: 'pointer',
+        border: '1px solid transparent',
+        borderRadius: '4px',
+        color: '#ffffff',
+        background: '#D97706',
+        lineHeight: '1.4',
+        display: 'inline-block'
+    });
+
+    hodBtn.addEventListener('mouseenter', () => { hodBtn.style.background = '#B45309'; });
+    hodBtn.addEventListener('mouseleave', () => { hodBtn.style.background = '#D97706'; });
+
+    hodBtn.addEventListener('click', () => {
+        const currentNameInput = findTargetInputAnyContext();
+        const currentName = currentNameInput ? (currentNameInput.value || '').trim() : '';
+
+        if (!currentName) {
+            alert('User name is empty — please open a request with a "Requested for" field first.');
+            return;
+        }
+
+        const quickReply = `@[${currentName}]\n\nPlease provide HoD email approval to proceed with your request.`;
+        insertText(quickReply);
+    });
+
+    textareaParent.insertAdjacentElement('afterend', btn);
+    btn.insertAdjacentElement('afterend', hodBtn);
+}
+
+
 
     // ─── Context searchers ────────────────────────────────────────────────────
     function searchInAllContexts(finder) {
