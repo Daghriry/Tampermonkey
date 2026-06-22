@@ -2,7 +2,7 @@
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
 // @version      2.9
-// @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, accessory name dropdown, and auto-mention in comment box
+// @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, accessory name dropdown, and @ mention button in comment box
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
 // @match        https://support.qiddiya.com/sc_req_item.do*
@@ -142,6 +142,92 @@
 
     function findCommentTextareaAnyContext() {
         return searchInAllContexts(findCommentTextarea);
+    }
+
+    // ─── Mention button injection ──────────────────────────────────────────────
+    function injectMentionButton() {
+        // Only on sc_req_item pages
+        if (!window.location.href.includes('sc_req_item')) return;
+
+        const textarea = findCommentTextareaAnyContext();
+        if (!textarea) return;
+
+        const doc = textarea.ownerDocument;
+
+        // Avoid duplicate
+        if (doc.getElementById('qiddiya-mention-btn')) return;
+
+        const nameInput = findTargetInputAnyContext();
+        const userName = nameInput ? (nameInput.value || '').trim() : '';
+
+        // Find the Post button row or the textarea parent to anchor the @ button
+        // Try to find a sibling container near the textarea
+        const textareaParent = textarea.parentElement;
+        if (!textareaParent) return;
+
+        const btn = doc.createElement('button');
+        btn.id = 'qiddiya-mention-btn';
+        btn.type = 'button';
+        btn.title = userName ? `Mention ${userName}` : 'Mention requested-for user';
+
+        // Dynamic label: show name if available, else generic @
+        btn.textContent = userName ? `@ ${userName}` : '@';
+
+        Object.assign(btn.style, {
+            marginTop: '6px',
+            padding: '3px 10px',
+            fontSize: '11px',
+            cursor: 'pointer',
+            border: '1px solid transparent',
+            borderRadius: '4px',
+            color: '#ffffff',
+            background: '#1F6FEB',
+            lineHeight: '1.4',
+            display: 'inline-block'
+        });
+        btn.addEventListener('mouseenter', () => { btn.style.background = '#1A5FD1'; });
+        btn.addEventListener('mouseleave', () => { btn.style.background = '#1F6FEB'; });
+
+        btn.addEventListener('click', () => {
+            // Re-read name at click time in case it changed
+            const currentNameInput = findTargetInputAnyContext();
+            const currentName = currentNameInput ? (currentNameInput.value || '').trim() : '';
+            if (!currentName) {
+                alert('User name is empty — please open a request with a "Requested for" field first.');
+                return;
+            }
+
+            const mention = `@[${currentName}]`;
+            const current = textarea.value;
+
+            // Insert at cursor position if possible, else append
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            if (typeof start === 'number') {
+                textarea.value = current.slice(0, start) + mention + ' ' + current.slice(end);
+                textarea.selectionStart = textarea.selectionEnd = start + mention.length + 1;
+            } else {
+                textarea.value = current ? current + '\n' + mention + ' ' : mention + ' ';
+            }
+
+            textarea.focus();
+
+            // Fire events so Angular ng-model picks up the value
+            ['input', 'change', 'keyup'].forEach(evtName => {
+                textarea.dispatchEvent(new Event(evtName, { bubbles: true }));
+            });
+
+            // Try Angular scope update
+            try {
+                const scope = angular.element(textarea).scope(); // eslint-disable-line no-undef
+                if (scope) {
+                    scope.$apply(() => { scope.inputTypeValue = textarea.value; });
+                }
+            } catch (e) { /* angular not accessible */ }
+        });
+
+        // Insert the button right after the textarea's parent container
+        textareaParent.insertAdjacentElement('afterend', btn);
     }
 
     // ─── Context searchers ────────────────────────────────────────────────────
@@ -396,53 +482,6 @@
         } else {
             nameInput.insertAdjacentElement('afterend', wrapper);
         }
-    }
-
-    // ─── Auto-mention in comment box ──────────────────────────────────────────
-    let mentionInjected = false;
-
-    function injectMentionIntoComment() {
-        // Only run on sc_req_item pages
-        const href = window.location.href;
-        if (!href.includes('sc_req_item')) return;
-        if (mentionInjected) return;
-
-        const nameInput = findTargetInputAnyContext();
-        if (!nameInput) return;
-
-        const userName = (nameInput.value || '').trim();
-        if (!userName) return;
-
-        const textarea = findCommentTextareaAnyContext();
-        if (!textarea) return;
-
-        const mention = `@[${userName}]`;
-
-        // Don't overwrite if already has this mention
-        if (textarea.value.includes(mention)) {
-            mentionInjected = true;
-            return;
-        }
-
-        // Set value
-        textarea.value = mention + ' ';
-
-        // Fire events so Angular ng-model picks up the change
-        ['input', 'change', 'keyup'].forEach(evtName => {
-            textarea.dispatchEvent(new Event(evtName, { bubbles: true }));
-        });
-
-        // Try to update Angular scope directly if accessible
-        try {
-            const scope = angular.element(textarea).scope(); // eslint-disable-line no-undef
-            if (scope) {
-                scope.$apply(() => {
-                    scope.inputTypeValue = textarea.value;
-                });
-            }
-        } catch (e) { /* angular not in scope, ignore */ }
-
-        mentionInjected = true;
     }
 
     // ─── Main injection ────────────────────────────────────────────────────────
@@ -721,8 +760,8 @@
             injectAccessoryNameDropdown(accNameInput);
         }
 
-        // Auto-mention in comment box
-        injectMentionIntoComment();
+        // @ Mention button near comment textarea
+        injectMentionButton();
     }
 
     function init() {
