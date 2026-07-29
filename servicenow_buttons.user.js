@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         User Requests & Assets & Accessories Buttons + Warranty
+// @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.2
 // @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, accessory name dropdown, and @ mention button in comment box
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
@@ -297,9 +297,47 @@
             insertText(bjReply);
         });
 
+        // ── App Install (IT Issue) button ──
+        const appBtn = doc.createElement('button');
+        appBtn.id = 'qiddiya-app-install-btn';
+        appBtn.type = 'button';
+        appBtn.title = 'Insert IT issue request for application installation';
+        appBtn.textContent = 'App';
+
+        Object.assign(appBtn.style, {
+            marginTop: '6px',
+            marginLeft: '6px',
+            padding: '3px 10px',
+            fontSize: '11px',
+            cursor: 'pointer',
+            border: '1px solid transparent',
+            borderRadius: '4px',
+            color: '#ffffff',
+            background: '#059669',
+            lineHeight: '1.4',
+            display: 'inline-block'
+        });
+
+        appBtn.addEventListener('mouseenter', () => { appBtn.style.background = '#047857'; });
+        appBtn.addEventListener('mouseleave', () => { appBtn.style.background = '#059669'; });
+
+        appBtn.addEventListener('click', () => {
+            const currentNameInput = findTargetInputAnyContext();
+            const currentName = currentNameInput ? (currentNameInput.value || '').trim() : '';
+
+            if (!currentName) {
+                alert('User name is empty — please open a request with a "Requested for" field first.');
+                return;
+            }
+
+            const quickReply = `@[${currentName}]\n\nPlease raise an IT issue for the helpdesk team to help you install the right application: https://support.qiddiya.com/esc?id=sc_cat_item&sys_id=6b598d618382c210e88141747daad326`;
+            insertText(quickReply);
+        });
+
         textareaParent.insertAdjacentElement('afterend', btn);
         btn.insertAdjacentElement('afterend', hodBtn);
         hodBtn.insertAdjacentElement('afterend', bjBtn);
+        bjBtn.insertAdjacentElement('afterend', appBtn);
     }
 
     // ─── Context searchers ────────────────────────────────────────────────────
@@ -415,10 +453,29 @@
         return part || '';
     }
 
-    function formatDurationPhrase(days, future) {
+    // Parse YYYY-MM-DD (or ISO) as local date at midnight; returns null if invalid
+    function parseExpiryDate(isoOrFormatted) {
+        const part = formatExpiryDate(isoOrFormatted);
+        if (!part) return null;
+        const m = part.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (!m) return null;
+        const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    // Whole days from today (local) to expiry date; expiry day itself counts as still covered
+    function daysUntilExpiry(expiryDate) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const end = new Date(expiryDate);
+        end.setHours(0, 0, 0, 0);
+        return Math.round((end - today) / 86400000);
+    }
+
+    function formatDurationPhrase(days) {
         const n = Math.abs(days);
-        if (n === 0) return future ? 'today' : 'today';
-        if (n === 1) return future ? '1 day' : '1 day';
+        if (n === 0) return 'today';
+        if (n === 1) return '1 day';
         if (n < 60) return n + ' days';
         const months = Math.round(n / 30);
         if (months < 24) return months + (months === 1 ? ' month' : ' months');
@@ -427,14 +484,29 @@
     }
 
     function buildWarrantyDisplayText(data) {
-        const days = data.days_remaining;
         const expiry = formatExpiryDate(data.warranty_expiration);
-        const state = data.warranty_state;
+        const expiryDate = parseExpiryDate(data.warranty_expiration);
+
+        // Prefer client-side date check so stale/wrong API warranty_state cannot mislead
+        let days = null;
+        if (expiryDate) {
+            days = daysUntilExpiry(expiryDate);
+        } else if (typeof data.days_remaining === 'number') {
+            days = data.days_remaining;
+        }
+
+        let state = data.warranty_state;
+        if (days !== null) {
+            state = days >= 0 ? 'in_warranty' : 'out_of_warranty';
+        }
 
         if (state === 'in_warranty') {
             let line = 'Still under warranty';
-            if (days !== null && days !== undefined && days > 0) {
-                line += ' · Expires in ' + formatDurationPhrase(days, true);
+            if (days !== null && days > 0) {
+                line += ' · Expires in ' + formatDurationPhrase(days);
+                if (expiry) line += ' (' + expiry + ')';
+            } else if (days === 0) {
+                line += ' · Expires today';
                 if (expiry) line += ' (' + expiry + ')';
             } else if (expiry) {
                 line += ' · Expires on ' + expiry;
@@ -444,8 +516,9 @@
 
         if (state === 'out_of_warranty') {
             let line = 'Warranty expired';
-            if (days !== null && days !== undefined && days < 0) {
-                line += ' · Expired ' + formatDurationPhrase(days, false) + ' ago';
+            if (days !== null && days < 0) {
+                line += ' · Expired ' + formatDurationPhrase(days) + ' ago';
+                if (expiry) line += ' (' + expiry + ')';
             } else if (expiry) {
                 line += ' · Ended ' + expiry;
             }
