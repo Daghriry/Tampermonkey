@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      3.2
+// @version      3.3
 // @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, accessory name dropdown, and @ mention button in comment box
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
@@ -131,6 +131,24 @@
         }
         return null;
     }
+    // ─── Accessory "Item" input finder ──────
+    function findCatalogItemInput(doc) {
+        if (!doc) return null;
+
+        const selectors = [
+            'input#sys_display\\.sc_req_item\\.cat_item',
+            'input[name="sys_display.sc_req_item.cat_item"]',
+            '#element\\.sc_req_item\\.cat_item input'
+        ];
+
+        for (const sel of selectors) {
+            const el = doc.querySelector(sel);
+            if (el) return el;
+        }
+
+        return null;
+    }
+
 
     // ─── Comment textarea finder ───────────────────────────────────────────────
     function findCommentTextarea(doc) {
@@ -373,6 +391,10 @@
         return searchInAllContexts(findAccessoryNameInput);
     }
 
+    function findCatalogItemInputAnyContext() {
+        return searchInAllContexts(findCatalogItemInput);
+    }
+
     // ─── Open helpers ─────────────────────────────────────────────────────────
     function openRequestsForUser(name) {
         const n = (name || '').trim();
@@ -411,6 +433,27 @@
                 'cmdb_ci_acc_list.do?sysparm_query=' +
                 encodeURIComponent('assigned_to.nameSTARTSWITH' + n) +
                 '&sysparm_first_row=1&sysparm_view=&sysparm_choice_query_raw=&sysparm_list_header_search=true'
+            ),
+            '_blank'
+        );
+    }
+
+
+    function openRequestsByItem(itemName) {
+        const n = (itemName || '').trim();
+
+        if (!n) {
+            alert('Item name is empty.');
+            return;
+        }
+
+        window.open(
+            'https://support.qiddiya.com/now/nav/ui/classic/params/target/' +
+            encodeURIComponent(
+                'sc_req_item_list.do?sysparm_query=' +
+                encodeURIComponent('cat_item.name=' + n) +
+                '&sysparm_first_row=1' +
+                '&sysparm_list_header_search=true'
             ),
             '_blank'
         );
@@ -631,6 +674,36 @@
 
     // ─── Main injection ────────────────────────────────────────────────────────
     function tryAddButtons() {
+		// Catalog Item button
+
+        const itemInput = findCatalogItemInputAnyContext();
+
+        if (
+            itemInput &&
+            !itemInput.ownerDocument.getElementById('qiddiya-item-requests-btn')
+        ) {
+            const doc = itemInput.ownerDocument;
+
+            const btnItem = doc.createElement('button');
+
+            btnItem.id = 'qiddiya-item-requests-btn';
+            btnItem.type = 'button';
+            btnItem.textContent = 'View Item Requests';
+            btnItem.title = 'Open all requests of this catalog item';
+
+            styleButton(btnItem, '#0EA5E9', '#0284C7');
+
+            btnItem.addEventListener('click', () => {
+                openRequestsByItem(itemInput.value);
+            });
+
+            if (itemInput.parentElement) {
+                itemInput.parentElement.appendChild(btnItem);
+            } else {
+                itemInput.insertAdjacentElement('afterend', btnItem);
+            }
+        }
+
         // User action buttons (Requests / Assets / Accessories)
         const targetInput = findTargetInputAnyContext();
         if (targetInput) {
