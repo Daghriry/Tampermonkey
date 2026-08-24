@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Qiddiya - User Requests & Assets & Accessories Buttons + Warranty
 // @namespace    http://tampermonkey.net/
-// @version      3.3
+// @version      3.4
 // @description  Add "Requests", "Assets", "Accessories" buttons, Lenovo warranty via daghriry.info API, accessory name dropdown, and @ mention button in comment box
 // @author       You
 // @match        https://support.qiddiya.com/sc_task.do*
@@ -33,7 +33,8 @@
         'Lenovo Bag',
         'Lenovo Webcam',
         'Cables',
-        'Privacy Screen'
+        'Privacy Screen',
+		'Pencil'
     ];
 
     // ─── Style helpers ────────────────────────────────────────────────────────
