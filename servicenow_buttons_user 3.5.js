@@ -303,7 +303,7 @@
         bjBtn.id = 'qiddiya-bj-btn';
         bjBtn.type = 'button';
         bjBtn.title = 'Insert Business Justification request reply';
-        bjBtn.textContent = 'BJ';
+        bjBtn.textContent = 'Business Justification';
 
         Object.assign(bjBtn.style, {
             marginTop: '6px',
@@ -338,7 +338,7 @@
         appBtn.id = 'qiddiya-app-install-btn';
         appBtn.type = 'button';
         appBtn.title = 'Insert IT issue request for application installation';
-        appBtn.textContent = 'App';
+        appBtn.textContent = 'IT Help Desk';
 
         Object.assign(appBtn.style, {
             marginTop: '6px',
