@@ -370,10 +370,46 @@
             insertText(quickReply);
         });
 
+        // ── Second Monitor button ──
+        const monitorBtn = doc.createElement('button');
+        monitorBtn.id = 'qiddiya-second-monitor-btn';
+        monitorBtn.type = 'button';
+        monitorBtn.title = 'Insert Second Monitor policy reply';
+        monitorBtn.textContent = 'Second Monitor';
+
+        Object.assign(monitorBtn.style, {
+            marginTop: '6px',
+            marginLeft: '6px',
+            padding: '3px 10px',
+            fontSize: '11px',
+            cursor: 'pointer',
+            border: '1px solid transparent',
+            borderRadius: '4px',
+            color: '#ffffff',
+            background: '#475569',
+            lineHeight: '1.4',
+            display: 'inline-block'
+        });
+
+        monitorBtn.addEventListener('mouseenter', () => { monitorBtn.style.background = '#334155'; });
+        monitorBtn.addEventListener('mouseleave', () => { monitorBtn.style.background = '#475569'; });
+
+        monitorBtn.addEventListener('click', () => {
+            const currentNameInput = findTargetInputAnyContext();
+            const currentName = currentNameInput ? (currentNameInput.value || '').trim() : '';
+
+            const monitorReply = currentName
+                ? `@[${currentName}]\n\nThe second monitor is not included in the approved Qiddiya IT Asset Standards and IT End User Computing Policy.`
+                : `The second monitor is not included in the approved Qiddiya IT Asset Standards and IT End User Computing Policy.`;
+
+            insertText(monitorReply);
+        });
+
         textareaParent.insertAdjacentElement('afterend', btn);
         btn.insertAdjacentElement('afterend', hodBtn);
         hodBtn.insertAdjacentElement('afterend', bjBtn);
         bjBtn.insertAdjacentElement('afterend', appBtn);
+        appBtn.insertAdjacentElement('afterend', monitorBtn);
     }
 
     // ─── Context searchers ────────────────────────────────────────────────────
