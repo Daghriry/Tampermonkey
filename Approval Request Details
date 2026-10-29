@@ -1,0 +1,2487 @@
+// ==UserScript==
+// @name         Qiddiya ServiceNow - Approval Request Details
+// @namespace    Qiddiya
+// @version      14.0
+// @description  Shows request type, request details and beneficiary in the ServiceNow approval list
+// @match        https://support.qiddiya.com/sysapproval_approver_list.do*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // =========================================================
+    // CONFIGURATION
+    // =========================================================
+
+    const TABLE_ID = 'sysapproval_approver_table';
+
+    const DETAILS_CLASS = 'tm-request-details-column';
+    const BENEFICIARY_CLASS = 'tm-requested-for-column';
+
+    const DETAILS_TITLE = 'Request Details';
+    const BENEFICIARY_TITLE = 'Requested for';
+
+    const MAX_CONCURRENT_REQUESTS = 4;
+
+    const requestCache = new Map();
+    const requestQueue = [];
+
+    let activeRequests = 0;
+    let scanTimer = null;
+    let observerStarted = false;
+
+    const REQUEST_TYPES = {
+        accessories: {
+            label: 'Accessories',
+            className: 'tm-type-accessories'
+        },
+
+        nonstandard: {
+            label: 'Non-Standard Hardware',
+            className: 'tm-type-nonstandard'
+        },
+
+        software: {
+            label: 'Software',
+            className: 'tm-type-software'
+        },
+
+        hardware: {
+            label: 'Standard Hardware',
+            className: 'tm-type-hardware'
+        },
+
+        onboarding: {
+            label: 'Non-Employee Onboarding',
+            className: 'tm-type-onboarding'
+        },
+
+        ownership: {
+            label: 'Asset Ownership Transfer',
+            className: 'tm-type-ownership'
+        },
+
+        other: {
+            label: 'Other Request',
+            className: 'tm-type-other'
+        }
+    };
+
+
+    // =========================================================
+    // STYLES
+    // =========================================================
+
+    function installStyles() {
+        if (document.getElementById('tm-request-details-style')) {
+            return;
+        }
+
+        const style = document.createElement('style');
+        style.id = 'tm-request-details-style';
+
+        style.textContent = `
+            #${TABLE_ID} .${DETAILS_CLASS} {
+                min-width: 400px !important;
+                width: 470px !important;
+                max-width: 620px !important;
+                white-space: normal !important;
+                vertical-align: top !important;
+                overflow-wrap: anywhere !important;
+                box-sizing: border-box !important;
+            }
+
+            #${TABLE_ID} .${BENEFICIARY_CLASS} {
+                min-width: 150px !important;
+                width: 180px !important;
+                max-width: 230px !important;
+                white-space: normal !important;
+                vertical-align: top !important;
+                overflow-wrap: anywhere !important;
+                box-sizing: border-box !important;
+            }
+
+            #${TABLE_ID} th.${DETAILS_CLASS},
+            #${TABLE_ID} th.${BENEFICIARY_CLASS} {
+                padding: 6px 8px !important;
+                text-align: left !important;
+                vertical-align: middle !important;
+                font: inherit !important;
+                background: inherit !important;
+                color: inherit !important;
+            }
+
+            #${TABLE_ID} td.${DETAILS_CLASS},
+            #${TABLE_ID} td.${BENEFICIARY_CLASS} {
+                padding: 7px 9px !important;
+                vertical-align: top !important;
+                font: inherit !important;
+                box-sizing: border-box !important;
+            }
+
+            #${TABLE_ID} td.${DETAILS_CLASS} {
+                border-left: 4px solid transparent !important;
+            }
+
+            /* Request type colors */
+
+            #${TABLE_ID} td.${DETAILS_CLASS}.tm-type-accessories {
+                border-left-color: #2563eb !important;
+                background: #eff6ff !important;
+            }
+
+            #${TABLE_ID} td.${DETAILS_CLASS}.tm-type-nonstandard {
+                border-left-color: #dc2626 !important;
+                background: #fef2f2 !important;
+            }
+
+            #${TABLE_ID} td.${DETAILS_CLASS}.tm-type-software {
+                border-left-color: #7c3aed !important;
+                background: #f5f3ff !important;
+            }
+
+            #${TABLE_ID} td.${DETAILS_CLASS}.tm-type-hardware {
+                border-left-color: #059669 !important;
+                background: #ecfdf5 !important;
+            }
+
+            #${TABLE_ID} td.${DETAILS_CLASS}.tm-type-onboarding {
+                border-left-color: #d97706 !important;
+                background: #fffbeb !important;
+            }
+
+            #${TABLE_ID} td.${DETAILS_CLASS}.tm-type-ownership {
+                border-left-color: #0891b2 !important;
+                background: #ecfeff !important;
+            }
+
+            #${TABLE_ID} td.${DETAILS_CLASS}.tm-type-other {
+                border-left-color: #64748b !important;
+                background: #f8fafc !important;
+            }
+
+            /* Type badge */
+
+            #${TABLE_ID} .tm-type-header {
+                margin: 0 0 9px 0;
+                padding: 0 0 8px 0;
+                border-bottom: 1px solid rgba(100,116,139,.22);
+            }
+
+            #${TABLE_ID} .tm-type-badge {
+                display: inline-block;
+                padding: 3px 9px;
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: 700;
+                line-height: 1.3;
+            }
+
+            #${TABLE_ID} .tm-type-accessories .tm-type-badge {
+                background: #dbeafe;
+                color: #1d4ed8;
+                border: 1px solid #93c5fd;
+            }
+
+            #${TABLE_ID} .tm-type-nonstandard .tm-type-badge {
+                background: #fee2e2;
+                color: #b91c1c;
+                border: 1px solid #fca5a5;
+            }
+
+            #${TABLE_ID} .tm-type-software .tm-type-badge {
+                background: #ede9fe;
+                color: #6d28d9;
+                border: 1px solid #c4b5fd;
+            }
+
+            #${TABLE_ID} .tm-type-hardware .tm-type-badge {
+                background: #d1fae5;
+                color: #047857;
+                border: 1px solid #6ee7b7;
+            }
+
+            #${TABLE_ID} .tm-type-onboarding .tm-type-badge {
+                background: #fef3c7;
+                color: #92400e;
+                border: 1px solid #fcd34d;
+            }
+
+            #${TABLE_ID} .tm-type-ownership .tm-type-badge {
+                background: #cffafe;
+                color: #0e7490;
+                border: 1px solid #67e8f9;
+            }
+
+            #${TABLE_ID} .tm-type-other .tm-type-badge {
+                background: #e2e8f0;
+                color: #475569;
+                border: 1px solid #cbd5e1;
+            }
+
+            /* Details */
+
+            #${TABLE_ID} .tm-detail-section {
+                margin: 0 0 9px 0;
+            }
+
+            #${TABLE_ID} .tm-detail-section:last-child {
+                margin-bottom: 0;
+            }
+
+            #${TABLE_ID} .tm-detail-section + .tm-detail-section {
+                padding-top: 7px;
+                border-top: 1px solid rgba(100,116,139,.18);
+            }
+
+            #${TABLE_ID} .tm-detail-label {
+                display: block;
+                margin-bottom: 3px;
+                color: #385a9c;
+                font-size: 11px;
+                font-weight: 700;
+            }
+
+            #${TABLE_ID} .tm-detail-value {
+                display: block;
+                color: #111827;
+                line-height: 1.4;
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
+            }
+
+            #${TABLE_ID} .tm-beneficiary-name {
+                display: block;
+                color: #0f172a;
+                font-weight: 600;
+                overflow-wrap: anywhere;
+            }
+
+            /* Accessories */
+
+            #${TABLE_ID} .tm-accessory-list {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 5px;
+                margin: 3px 0 0 0;
+                padding: 0;
+                list-style: none;
+            }
+
+            #${TABLE_ID} .tm-accessory-item {
+                display: inline-block;
+                padding: 3px 8px;
+                border: 1px solid #93c5fd;
+                border-radius: 12px;
+                background: #dbeafe;
+                color: #1d4ed8;
+                font-size: 11px;
+                font-weight: 600;
+            }
+
+            /* Status */
+
+            #${TABLE_ID} .tm-loading {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                color: #6b7280;
+            }
+
+            #${TABLE_ID} .tm-spinner {
+                width: 11px;
+                height: 11px;
+                display: inline-block;
+                border: 2px solid #d1d5db;
+                border-top-color: #2563eb;
+                border-radius: 50%;
+                animation: tm-spin .8s linear infinite;
+            }
+
+            #${TABLE_ID} .tm-empty {
+                color: #6b7280;
+                font-style: italic;
+            }
+
+            #${TABLE_ID} .tm-error {
+                color: #b91c1c;
+            }
+
+            #${TABLE_ID} .tm-retry {
+                margin-top: 5px;
+                padding: 2px 7px;
+                border: 1px solid #b91c1c;
+                border-radius: 3px;
+                background: transparent;
+                color: #b91c1c;
+                cursor: pointer;
+            }
+
+            @keyframes tm-spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+
+    // =========================================================
+    // UTILITIES
+    // =========================================================
+
+    function clean(value) {
+        return String(value || '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/\r\n/g, '\n')
+            .replace(/\r/g, '\n')
+            .replace(/[ \t]+/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+
+    function normalize(value) {
+        return clean(value)
+            .replace(/\*/g, '')
+            .replace(/[؟?]+$/g, '')
+            .replace(/\s*\/\s*/g, '/')
+            .replace(/\s+/g, ' ')
+            .toLowerCase()
+            .trim();
+    }
+
+
+    function isGarbage(value) {
+        const text = clean(value);
+
+        return (
+            !text ||
+            /^[a-f0-9]{32}$/i.test(text) ||
+            /^[a-f0-9]{40,}$/i.test(text) ||
+            /^(null|undefined)$/i.test(text)
+        );
+    }
+
+
+    function isEmptyChoice(value) {
+        const text = normalize(value);
+
+        return (
+            !text ||
+            text === '-- none --' ||
+            text === '--none--' ||
+            text === 'none' ||
+            text === '(empty)'
+        );
+    }
+
+
+    function unique(values) {
+        return Array.from(
+            new Set(
+                values
+                    .map(clean)
+                    .filter(Boolean)
+            )
+        );
+    }
+
+
+    // =========================================================
+    // FIELD EXTRACTION
+    // =========================================================
+
+    function readField(field) {
+        if (!field) {
+            return '';
+        }
+
+        if (field.tagName === 'SELECT') {
+            const selected = Array.from(
+                field.selectedOptions || []
+            )
+                .map(option =>
+                    clean(option.textContent)
+                )
+                .filter(value =>
+                    !isEmptyChoice(value)
+                );
+
+            if (selected.length) {
+                return selected.join(', ');
+            }
+
+            return clean(field.value);
+        }
+
+        if (
+            field.tagName === 'INPUT' &&
+            field.type === 'checkbox'
+        ) {
+            return field.checked ? 'Yes' : '';
+        }
+
+        if (
+            field.tagName === 'INPUT' &&
+            field.type === 'radio'
+        ) {
+            return field.checked
+                ? clean(field.value)
+                : '';
+        }
+
+        const value = clean(
+            field.value ||
+            field.getAttribute('value') ||
+            field.textContent ||
+            ''
+        );
+
+        return isGarbage(value)
+            ? ''
+            : value;
+    }
+
+
+    function findVariableLabel(
+        doc,
+        searchText
+    ) {
+        const wanted =
+            normalize(searchText);
+
+        const labels =
+            Array.from(
+                doc.querySelectorAll('label')
+            );
+
+        let label =
+            labels.find(item =>
+                normalize(
+                    item.innerText ||
+                    item.textContent
+                ) === wanted
+            );
+
+        if (!label) {
+            label =
+                labels.find(item =>
+                    normalize(
+                        item.innerText ||
+                        item.textContent
+                    ).includes(wanted)
+                );
+        }
+
+        return label || null;
+    }
+
+
+    function getVariable(
+        doc,
+        searchText
+    ) {
+        const label =
+            findVariableLabel(
+                doc,
+                searchText
+            );
+
+        if (!label) {
+            return null;
+        }
+
+        const fieldId =
+            label.getAttribute('for');
+
+        let value = '';
+
+        if (fieldId) {
+            value =
+                readField(
+                    doc.getElementById(fieldId)
+                );
+
+            if (!value) {
+                value =
+                    readField(
+                        doc.getElementById(
+                            'sys_original.' +
+                            fieldId
+                        )
+                    );
+            }
+        }
+
+        if (!value) {
+            const containers = [
+                label.closest('.form-group'),
+                label.closest('.question'),
+                label.closest('.cat_item_option'),
+                label.closest('td'),
+                label.closest('tr'),
+                label.parentElement
+            ].filter(Boolean);
+
+            for (const container of containers) {
+                const fields =
+                    container.querySelectorAll(
+                        'textarea,input,select'
+                    );
+
+                for (const field of fields) {
+                    const candidate =
+                        readField(field);
+
+                    if (candidate) {
+                        value = candidate;
+                        break;
+                    }
+                }
+
+                if (value) {
+                    break;
+                }
+            }
+        }
+
+        if (
+            !value ||
+            isGarbage(value)
+        ) {
+            return null;
+        }
+
+        return {
+            label: clean(
+                label.innerText ||
+                label.textContent
+            ),
+            value
+        };
+    }
+
+
+    function getFirstVariable(
+        doc,
+        names
+    ) {
+        for (const name of names) {
+            const result =
+                getVariable(
+                    doc,
+                    name
+                );
+
+            if (
+                result &&
+                !isEmptyChoice(
+                    result.value
+                )
+            ) {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+
+    function collectSections(
+        doc,
+        mappings
+    ) {
+        const sections = [];
+
+        mappings.forEach(mapping => {
+            const result =
+                getFirstVariable(
+                    doc,
+                    mapping.names
+                );
+
+            if (
+                !result ||
+                isEmptyChoice(
+                    result.value
+                )
+            ) {
+                return;
+            }
+
+            sections.push({
+                label: mapping.label,
+                value: result.value,
+                type: 'text'
+            });
+        });
+
+        return sections;
+    }
+
+
+    function removeDuplicates(sections) {
+        const seen = new Set();
+
+        return sections.filter(section => {
+            const value =
+                Array.isArray(section.value)
+                    ? section.value.join('|')
+                    : section.value;
+
+            const key =
+                normalize(section.label) +
+                '|' +
+                normalize(value);
+
+            if (seen.has(key)) {
+                return false;
+            }
+
+            seen.add(key);
+            return true;
+        });
+    }
+
+
+    // =========================================================
+    // BASIC REQUEST DATA
+    // =========================================================
+
+    function getItemName(doc) {
+        const result =
+            getVariable(
+                doc,
+                'Item'
+            );
+
+        return result
+            ? clean(result.value)
+            : '';
+    }
+
+
+    function getRequestType(doc) {
+        const result =
+            getVariable(
+                doc,
+                'Request Type'
+            );
+
+        return result
+            ? normalize(result.value)
+            : '';
+    }
+
+
+    function extractBeneficiary(doc) {
+        const direct =
+            doc.getElementById(
+                'sys_display.sc_req_item.requested_for'
+            );
+
+        const directValue =
+            readField(direct);
+
+        if (directValue) {
+            return directValue;
+        }
+
+        const result =
+            getVariable(
+                doc,
+                'Requested for'
+            );
+
+        return result
+            ? result.value
+            : '';
+    }
+
+
+    // =========================================================
+    // ACCESSORIES
+    // =========================================================
+
+    function extractAccessories(doc) {
+        let selectedList =
+            doc.querySelector(
+                '#accessories_label_select_1'
+            );
+
+        if (!selectedList) {
+            selectedList =
+                Array.from(
+                    doc.querySelectorAll('select')
+                )
+                .find(select => {
+                    const id = String(
+                        select.getAttribute('id') || ''
+                    ).toLowerCase();
+
+                    const name = String(
+                        select.getAttribute('name') || ''
+                    ).toLowerCase();
+
+                    return (
+                        (
+                            id.includes('accessories_label') ||
+                            name.includes('accessories_label')
+                        ) &&
+                        (
+                            id.includes('select_1') ||
+                            name.includes('select_1')
+                        )
+                    );
+                });
+        }
+
+        if (!selectedList) {
+            return [];
+        }
+
+        return unique(
+            Array.from(
+                selectedList.options || []
+            )
+                .map(option =>
+                    clean(
+                        option.textContent ||
+                        option.label
+                    )
+                )
+                .filter(item =>
+                    !isEmptyChoice(item)
+                )
+        );
+    }
+
+
+    // =========================================================
+    // JUSTIFICATION
+    // =========================================================
+
+    function extractJustification(doc) {
+        return getFirstVariable(
+            doc,
+            [
+                'Description/Justification',
+                'Business Justification',
+                'Business Justification / Description',
+                'Request Justification',
+                'Business Need',
+                'Reason For Request',
+                'Description'
+            ]
+        );
+    }
+
+
+    function addJustification(
+        sections,
+        justification
+    ) {
+        if (!justification) {
+            return;
+        }
+
+        const duplicate =
+            sections.some(section =>
+                normalize(section.value) ===
+                normalize(
+                    justification.value
+                )
+            );
+
+        if (!duplicate) {
+            sections.push({
+                label: justification.label,
+                value: justification.value,
+                type: 'text'
+            });
+        }
+    }
+
+
+    // =========================================================
+    // NON-STANDARD HARDWARE
+    // =========================================================
+
+    function isNonStandard(
+        requestType
+    ) {
+        return (
+            requestType === 'nonstd' ||
+            requestType.includes(
+                'non standard'
+            ) ||
+            requestType.includes(
+                'non-standard'
+            )
+        );
+    }
+
+
+    function extractNonStandard(doc) {
+        return collectSections(
+            doc,
+            [
+                {
+                    names: [
+                        'Non Standard Hardware Name'
+                    ],
+                    label:
+                        'Non-Standard Hardware'
+                },
+
+                {
+                    names: [
+                        'What Is The Primary Purpose Of The Request?'
+                    ],
+                    label:
+                        'Primary Purpose'
+                },
+
+                {
+                    names: [
+                        'What Performance Issues Are You Currently Facing With Your Existing setup?'
+                    ],
+                    label:
+                        'Performance Issues'
+                },
+
+                {
+                    names: [
+                        'What Specific Application Or Software Do You Plan To Use? (For Computers)'
+                    ],
+                    label:
+                        'Application / Software'
+                },
+
+                {
+                    names: [
+                        'Is There An Allocated Budget?'
+                    ],
+                    label:
+                        'Allocated Budget'
+                }
+            ]
+        );
+    }
+
+
+    // =========================================================
+    // NON-EMPLOYEE ONBOARDING
+    // =========================================================
+
+    function isOnboarding(itemName) {
+        const item = normalize(itemName);
+
+        return (
+            item.includes(
+                'non-employees laptop & license onboarding'
+            ) ||
+            item.includes(
+                'non employees laptop & license onboarding'
+            ) ||
+            item.includes(
+                'non-employee laptop & license onboarding'
+            ) ||
+            item.includes(
+                'onboarding - external users'
+            ) ||
+            item.includes(
+                'onboarding external users'
+            )
+        );
+    }
+
+
+    function extractOnboarding(doc) {
+        const sections = [];
+
+        const firstName =
+            getFirstVariable(
+                doc,
+                [
+                    'First Name',
+                    'English First Name'
+                ]
+            );
+
+        const lastName =
+            getFirstVariable(
+                doc,
+                [
+                    'Last Name',
+                    'English Last Name'
+                ]
+            );
+
+        const fullName =
+            clean(
+                [
+                    firstName?.value,
+                    lastName?.value
+                ]
+                    .filter(Boolean)
+                    .join(' ')
+            );
+
+        if (fullName) {
+            sections.push({
+                label: 'New Joiner Name',
+                value: fullName,
+                type: 'text'
+            });
+        }
+
+        sections.push(
+            ...collectSections(
+                doc,
+                [
+                    {
+                        names: [
+                            'Arabic Name',
+                            'Full Name in Arabic'
+                        ],
+                        label: 'Arabic Name'
+                    },
+
+                    {
+                        names: [
+                            'User Type'
+                        ],
+                        label: 'User Type'
+                    },
+
+                    {
+                        names: [
+                            'Contractor Company',
+                            'Contractor Name',
+                            'Name of Contractor'
+                        ],
+                        label: 'Contractor Company'
+                    },
+
+                    {
+                        names: [
+                            'Department'
+                        ],
+                        label: 'Department'
+                    },
+
+                    {
+                        names: [
+                            'Job Title'
+                        ],
+                        label: 'Job Title'
+                    },
+
+                    {
+                        names: [
+                            'Line Manager',
+                            'Direct Manager',
+                            'Manager'
+                        ],
+                        label: 'Line Manager'
+                    },
+
+                    {
+                        names: [
+                            'Start Date'
+                        ],
+                        label: 'Start Date'
+                    },
+
+                    {
+                        names: [
+                            'End Date'
+                        ],
+                        label: 'End Date'
+                    },
+
+                    {
+                        names: [
+                            'Duration'
+                        ],
+                        label: 'Duration'
+                    },
+
+                    {
+                        names: [
+                            'Mobile Number',
+                            'Mobile No',
+                            'Phone Number'
+                        ],
+                        label: 'Mobile Number'
+                    },
+
+                    {
+                        names: [
+                            'Is A Laptop Required?',
+                            'Is a Laptop Required',
+                            'Is a laptop required?'
+                        ],
+                        label: 'Laptop Required'
+                    },
+
+                    {
+                        names: [
+                            'Required Hardware'
+                        ],
+                        label: 'Required Hardware'
+                    },
+
+                    {
+                        names: [
+                            'Project',
+                            'Project Name'
+                        ],
+                        label: 'Project'
+                    },
+
+                    {
+                        names: [
+                            'Description',
+                            'Description/Justification'
+                        ],
+                        label: 'Description'
+                    }
+                ]
+            )
+        );
+
+        return removeDuplicates(
+            sections
+        );
+    }
+
+
+    // =========================================================
+    // ASSET OWNERSHIP TRANSFER
+    // =========================================================
+
+    function isOwnershipTransfer(
+        itemName
+    ) {
+        const item =
+            normalize(itemName);
+
+        return (
+            item.includes(
+                'request asset ownership transfer'
+            ) ||
+            item.includes(
+                'asset ownership transfer'
+            ) ||
+            item.includes(
+                'ownership transfer request'
+            )
+        );
+    }
+
+
+    function extractOwnershipTransfer(doc) {
+        return collectSections(
+            doc,
+            [
+                {
+                    names: [
+                        'Asset Tag / Serial Number',
+                        'Asset Tag/Serial Number',
+                        'Asset Tag Serial Number',
+                        'Asset Tag / Serial no',
+                        'Serial Number'
+                    ],
+                    label:
+                        'Asset Tag / Serial Number'
+                },
+
+                {
+                    names: [
+                        'Location'
+                    ],
+                    label:
+                        'Location'
+                },
+
+                {
+                    names: [
+                        'New Company',
+                        'Company'
+                    ],
+                    label:
+                        'New Company'
+                },
+
+                {
+                    names: [
+                        'Description',
+                        'Description/Justification'
+                    ],
+                    label:
+                        'Description'
+                },
+
+                {
+                    names: [
+                        'Acknowledgement',
+                        'Acknowledgment'
+                    ],
+                    label:
+                        'Acknowledgement'
+                }
+            ]
+        );
+    }
+
+
+    // =========================================================
+    // CATEGORY
+    // =========================================================
+
+    function detectCategory(
+        itemName,
+        requestType,
+        sections,
+        accessories
+    ) {
+        const item =
+            normalize(itemName);
+
+        if (isOnboarding(itemName)) {
+            return 'onboarding';
+        }
+
+        if (
+            isOwnershipTransfer(
+                itemName
+            )
+        ) {
+            return 'ownership';
+        }
+
+        if (
+            isNonStandard(
+                requestType
+            ) ||
+            sections.some(section =>
+                normalize(section.label)
+                    .includes(
+                        'non-standard hardware'
+                    )
+            )
+        ) {
+            return 'nonstandard';
+        }
+
+        if (
+            accessories.length > 0 ||
+            requestType === 'accessories' ||
+            requestType.includes(
+                'accessor'
+            )
+        ) {
+            return 'accessories';
+        }
+
+        if (
+            item.includes('software') ||
+            requestType.includes(
+                'software'
+            ) ||
+            sections.some(section =>
+                normalize(section.label)
+                    .includes(
+                        'business justification'
+                    )
+            )
+        ) {
+            return 'software';
+        }
+
+        if (
+            item.includes('hardware') ||
+            requestType.includes(
+                'hardware'
+            ) ||
+            sections.some(section =>
+                normalize(section.label)
+                    .includes(
+                        'description/justification'
+                    )
+            )
+        ) {
+            return 'hardware';
+        }
+
+        return 'other';
+    }
+
+
+    // =========================================================
+    // PARSE RITM
+    // =========================================================
+
+    function parseRitm(html) {
+        const doc =
+            new DOMParser()
+                .parseFromString(
+                    html,
+                    'text/html'
+                );
+
+        const title =
+            normalize(doc.title);
+
+        const bodyText =
+            normalize(
+                doc.body?.textContent
+            );
+
+        if (
+            title.includes('login') ||
+            bodyText.includes(
+                'your session has expired'
+            )
+        ) {
+            throw new Error(
+                'SESSION_EXPIRED'
+            );
+        }
+
+        const itemName =
+            getItemName(doc);
+
+        const requestType =
+            getRequestType(doc);
+
+        const beneficiary =
+            extractBeneficiary(doc);
+
+        const accessories =
+            extractAccessories(doc);
+
+        let sections = [];
+
+        if (isOnboarding(itemName)) {
+            sections =
+                extractOnboarding(doc);
+
+        } else if (
+            isOwnershipTransfer(
+                itemName
+            )
+        ) {
+            sections =
+                extractOwnershipTransfer(
+                    doc
+                );
+
+        } else if (
+            isNonStandard(
+                requestType
+            )
+        ) {
+            sections =
+                extractNonStandard(doc);
+        }
+
+        addJustification(
+            sections,
+            extractJustification(doc)
+        );
+
+        if (accessories.length > 0) {
+            sections.push({
+                label: 'Accessories',
+                value: accessories,
+                type: 'accessories'
+            });
+        }
+
+        sections =
+            removeDuplicates(
+                sections
+            );
+
+        const category =
+            detectCategory(
+                itemName,
+                requestType,
+                sections,
+                accessories
+            );
+
+        const typeInfo =
+            REQUEST_TYPES[category] ||
+            REQUEST_TYPES.other;
+
+        return {
+            itemName,
+            requestType,
+            beneficiary,
+            category,
+            typeLabel: typeInfo.label,
+            typeClass: typeInfo.className,
+            sections
+        };
+    }
+
+
+    // =========================================================
+    // FETCH
+    // =========================================================
+
+    function getSysId(url) {
+        try {
+            return new URL(
+                url,
+                window.location.origin
+            )
+                .searchParams
+                .get('sys_id') || '';
+
+        } catch {
+            return '';
+        }
+    }
+
+
+    function buildRitmUrl(url) {
+        const sysId =
+            getSysId(url);
+
+        if (
+            !/^[a-f0-9]{32}$/i
+                .test(sysId)
+        ) {
+            return '';
+        }
+
+        return (
+            window.location.origin +
+            '/sc_req_item.do' +
+            '?sys_id=' +
+            encodeURIComponent(sysId) +
+            '&sysparm_view=sow'
+        );
+    }
+
+
+    async function loadRitm(url) {
+        if (
+            requestCache.has(url)
+        ) {
+            return requestCache.get(
+                url
+            );
+        }
+
+        const response =
+            await fetch(
+                url,
+                {
+                    credentials:
+                        'same-origin',
+
+                    cache:
+                        'no-store',
+
+                    redirect:
+                        'follow',
+
+                    headers: {
+                        Accept:
+                            'text/html,application/xhtml+xml'
+                    }
+                }
+            );
+
+        if (!response.ok) {
+            throw new Error(
+                'HTTP_' +
+                response.status
+            );
+        }
+
+        const finalUrl =
+            response.url || '';
+
+        if (
+            finalUrl.includes('login') ||
+            finalUrl.includes('sso') ||
+            finalUrl.includes(
+                'auth_redirect'
+            )
+        ) {
+            throw new Error(
+                'SESSION_EXPIRED'
+            );
+        }
+
+        const result =
+            parseRitm(
+                await response.text()
+            );
+
+        requestCache.set(
+            url,
+            result
+        );
+
+        return result;
+    }
+
+
+    // =========================================================
+    // RENDERING
+    // =========================================================
+
+    function clearTypeClasses(cell) {
+        Object.values(
+            REQUEST_TYPES
+        )
+            .forEach(type =>
+                cell.classList.remove(
+                    type.className
+                )
+            );
+    }
+
+
+    function showLoading(
+        detailsCell,
+        beneficiaryCell,
+        ritm
+    ) {
+        clearTypeClasses(
+            detailsCell
+        );
+
+        detailsCell.replaceChildren();
+        beneficiaryCell.replaceChildren();
+
+        const wrapper =
+            document.createElement('span');
+
+        wrapper.className =
+            'tm-loading';
+
+        const spinner =
+            document.createElement('span');
+
+        spinner.className =
+            'tm-spinner';
+
+        const text =
+            document.createElement('span');
+
+        text.textContent =
+            ritm
+                ? 'Loading ' + ritm + '...'
+                : 'Loading...';
+
+        wrapper.append(
+            spinner,
+            text
+        );
+
+        detailsCell.appendChild(
+            wrapper
+        );
+
+        beneficiaryCell.textContent =
+            'Loading...';
+    }
+
+
+    function createTypeHeader(result) {
+        const header =
+            document.createElement('div');
+
+        header.className =
+            'tm-type-header';
+
+        const badge =
+            document.createElement('span');
+
+        badge.className =
+            'tm-type-badge';
+
+        badge.textContent =
+            result.typeLabel;
+
+        header.appendChild(badge);
+
+        return header;
+    }
+
+
+    function createTextSection(
+        labelText,
+        valueText
+    ) {
+        const section =
+            document.createElement('div');
+
+        section.className =
+            'tm-detail-section';
+
+        const label =
+            document.createElement('span');
+
+        label.className =
+            'tm-detail-label';
+
+        label.textContent =
+            labelText;
+
+        const value =
+            document.createElement('span');
+
+        value.className =
+            'tm-detail-value';
+
+        value.textContent =
+            valueText;
+
+        value.title =
+            valueText;
+
+        section.append(
+            label,
+            value
+        );
+
+        return section;
+    }
+
+
+    function createAccessoriesSection(
+        accessories
+    ) {
+        const section =
+            document.createElement('div');
+
+        section.className =
+            'tm-detail-section';
+
+        const label =
+            document.createElement('span');
+
+        label.className =
+            'tm-detail-label';
+
+        label.textContent =
+            'Accessories';
+
+        const list =
+            document.createElement('ul');
+
+        list.className =
+            'tm-accessory-list';
+
+        accessories.forEach(accessory => {
+            const item =
+                document.createElement('li');
+
+            item.className =
+                'tm-accessory-item';
+
+            item.textContent =
+                accessory;
+
+            list.appendChild(item);
+        });
+
+        section.append(
+            label,
+            list
+        );
+
+        return section;
+    }
+
+
+    function showResult(
+        detailsCell,
+        beneficiaryCell,
+        result
+    ) {
+        detailsCell.replaceChildren();
+        beneficiaryCell.replaceChildren();
+
+        clearTypeClasses(
+            detailsCell
+        );
+
+        detailsCell.classList.add(
+            result.typeClass
+        );
+
+        detailsCell.appendChild(
+            createTypeHeader(result)
+        );
+
+        if (result.beneficiary) {
+            const name =
+                document.createElement('span');
+
+            name.className =
+                'tm-beneficiary-name';
+
+            name.textContent =
+                result.beneficiary;
+
+            beneficiaryCell.appendChild(
+                name
+            );
+
+        } else {
+            const empty =
+                document.createElement('span');
+
+            empty.className =
+                'tm-empty';
+
+            empty.textContent =
+                'Not available';
+
+            beneficiaryCell.appendChild(
+                empty
+            );
+        }
+
+        if (
+            !result.sections ||
+            result.sections.length === 0
+        ) {
+            const empty =
+                document.createElement('span');
+
+            empty.className =
+                'tm-empty';
+
+            empty.textContent =
+                'No request details found';
+
+            detailsCell.appendChild(
+                empty
+            );
+
+            return;
+        }
+
+        result.sections.forEach(section => {
+            if (
+                section.type ===
+                'accessories'
+            ) {
+                detailsCell.appendChild(
+                    createAccessoriesSection(
+                        section.value
+                    )
+                );
+
+                return;
+            }
+
+            detailsCell.appendChild(
+                createTextSection(
+                    section.label,
+                    section.value
+                )
+            );
+        });
+    }
+
+
+    function showError(
+        detailsCell,
+        beneficiaryCell,
+        error,
+        job
+    ) {
+        detailsCell.replaceChildren();
+        beneficiaryCell.replaceChildren();
+
+        clearTypeClasses(
+            detailsCell
+        );
+
+        const message =
+            document.createElement('span');
+
+        message.className =
+            'tm-error';
+
+        message.textContent =
+            error?.message ===
+            'SESSION_EXPIRED'
+                ? 'Session expired or redirected to login'
+                : 'Unable to load request details';
+
+        const retry =
+            document.createElement('button');
+
+        retry.type = 'button';
+        retry.className = 'tm-retry';
+        retry.textContent = 'Retry';
+
+        retry.addEventListener(
+            'click',
+            () => {
+                requestCache.delete(
+                    job.ritmUrl
+                );
+
+                showLoading(
+                    job.detailsCell,
+                    job.beneficiaryCell,
+                    job.ritm
+                );
+
+                requestQueue.push(job);
+
+                processQueue();
+            }
+        );
+
+        detailsCell.append(
+            message,
+            document.createElement('br'),
+            retry
+        );
+
+        beneficiaryCell.textContent =
+            'Unable to load';
+    }
+
+
+    // =========================================================
+    // LIST STRUCTURE
+    // =========================================================
+
+    function findApprovalHeader(table) {
+        const rows =
+            Array.from(
+                table.querySelectorAll(
+                    'thead tr'
+                )
+            );
+
+        for (const row of rows) {
+            const cells =
+                Array.from(
+                    row.querySelectorAll(
+                        ':scope > th, :scope > td'
+                    )
+                );
+
+            const header =
+                cells.find(cell => {
+                    if (
+                        cell.classList.contains(
+                            DETAILS_CLASS
+                        ) ||
+                        cell.classList.contains(
+                            BENEFICIARY_CLASS
+                        )
+                    ) {
+                        return false;
+                    }
+
+                    const name =
+                        String(
+                            cell.getAttribute('name') ||
+                            ''
+                        )
+                            .toLowerCase();
+
+                    const text =
+                        normalize(
+                            cell.textContent
+                        );
+
+                    return (
+                        name === 'sysapproval' ||
+                        text === 'approval for'
+                    );
+                });
+
+            if (header) {
+                return header;
+            }
+        }
+
+        return null;
+    }
+
+
+    function findApprovalCell(row) {
+        const cells =
+            Array.from(
+                row.querySelectorAll(
+                    ':scope > td'
+                )
+            )
+                .filter(cell =>
+                    !cell.classList.contains(
+                        DETAILS_CLASS
+                    ) &&
+                    !cell.classList.contains(
+                        BENEFICIARY_CLASS
+                    )
+                );
+
+        let cell =
+            cells.find(item => {
+                const name =
+                    String(
+                        item.getAttribute('name') ||
+                        ''
+                    )
+                        .toLowerCase();
+
+                const element =
+                    String(
+                        item.getAttribute(
+                            'data-element'
+                        ) || ''
+                    )
+                        .toLowerCase();
+
+                return (
+                    name === 'sysapproval' ||
+                    element === 'sysapproval'
+                );
+            });
+
+        if (cell) {
+            return cell;
+        }
+
+        cell =
+            cells.find(item =>
+                Array.from(
+                    item.querySelectorAll(
+                        'a[href]'
+                    )
+                )
+                    .some(link => {
+                        const href =
+                            String(
+                                link.getAttribute('href') ||
+                                ''
+                            );
+
+                        const text =
+                            clean(link.textContent);
+
+                        return (
+                            href.includes(
+                                'sc_req_item.do'
+                            ) ||
+                            /^RITM\d+$/i.test(text) ||
+                            text.includes(
+                                'Requested Item: RITM'
+                            )
+                        );
+                    })
+            );
+
+        if (cell) {
+            return cell;
+        }
+
+        return cells.find(item =>
+            /\bRITM\d+\b/i.test(
+                clean(item.textContent)
+            )
+        ) || null;
+    }
+
+
+    function findRitmLink(row) {
+        const links =
+            Array.from(
+                row.querySelectorAll(
+                    'a[href]'
+                )
+            );
+
+        let link =
+            links.find(item =>
+                String(
+                    item.getAttribute('href') ||
+                    ''
+                )
+                    .includes(
+                        'sc_req_item.do'
+                    )
+            );
+
+        if (link) {
+            return link;
+        }
+
+        return links.find(item => {
+            const href =
+                String(
+                    item.getAttribute('href') ||
+                    ''
+                );
+
+            const text =
+                clean(item.textContent);
+
+            return (
+                href.includes('task.do') &&
+                /^RITM\d+$/i.test(text)
+            );
+        }) || null;
+    }
+
+
+    function getRitmNumber(row) {
+        const match =
+            clean(row.textContent)
+                .match(/\bRITM\d+\b/i);
+
+        return match
+            ? match[0].toUpperCase()
+            : '';
+    }
+
+
+    function createHeader(
+        referenceHeader,
+        className,
+        title
+    ) {
+        const header =
+            referenceHeader.cloneNode(false);
+
+        header.removeAttribute('id');
+        header.removeAttribute('name');
+        header.removeAttribute(
+            'data-element'
+        );
+
+        header.classList.add(className);
+        header.innerHTML = '';
+
+        const container =
+            document.createElement('span');
+
+        container.className =
+            'list_header_cell_container';
+
+        const text =
+            document.createElement('span');
+
+        text.className =
+            'column_head table-col-header';
+
+        text.textContent = title;
+
+        container.appendChild(text);
+        header.appendChild(container);
+
+        return header;
+    }
+
+
+    function installHeaders(table) {
+        const approvalHeader =
+            findApprovalHeader(table);
+
+        if (!approvalHeader) {
+            return;
+        }
+
+        const row =
+            approvalHeader.parentElement;
+
+        let detailsHeader =
+            row.querySelector(
+                '.' + DETAILS_CLASS
+            );
+
+        let beneficiaryHeader =
+            row.querySelector(
+                '.' + BENEFICIARY_CLASS
+            );
+
+        if (!detailsHeader) {
+            detailsHeader =
+                createHeader(
+                    approvalHeader,
+                    DETAILS_CLASS,
+                    DETAILS_TITLE
+                );
+        }
+
+        if (!beneficiaryHeader) {
+            beneficiaryHeader =
+                createHeader(
+                    approvalHeader,
+                    BENEFICIARY_CLASS,
+                    BENEFICIARY_TITLE
+                );
+        }
+
+        approvalHeader.insertAdjacentElement(
+            'afterend',
+            detailsHeader
+        );
+
+        detailsHeader.insertAdjacentElement(
+            'afterend',
+            beneficiaryHeader
+        );
+    }
+
+
+    function getApprovalIndex(table) {
+        const approvalHeader =
+            findApprovalHeader(table);
+
+        if (!approvalHeader) {
+            return -1;
+        }
+
+        const originalCells =
+            Array.from(
+                approvalHeader
+                    .parentElement
+                    .children
+            )
+                .filter(cell =>
+                    !cell.classList.contains(
+                        DETAILS_CLASS
+                    ) &&
+                    !cell.classList.contains(
+                        BENEFICIARY_CLASS
+                    )
+                );
+
+        return originalCells.indexOf(
+            approvalHeader
+        );
+    }
+
+
+    function installSearchColumns(table) {
+        const approvalHeader =
+            findApprovalHeader(table);
+
+        if (!approvalHeader) {
+            return;
+        }
+
+        const approvalIndex =
+            getApprovalIndex(table);
+
+        if (approvalIndex < 0) {
+            return;
+        }
+
+        const headerRow =
+            approvalHeader.parentElement;
+
+        const searchRows =
+            Array.from(
+                table.querySelectorAll(
+                    'thead tr'
+                )
+            )
+                .filter(row =>
+                    row !== headerRow &&
+                    row.querySelector('input')
+                );
+
+        searchRows.forEach(row => {
+            row.querySelectorAll(
+                '.' +
+                DETAILS_CLASS +
+                ', .' +
+                BENEFICIARY_CLASS
+            )
+                .forEach(cell =>
+                    cell.remove()
+                );
+
+            const originalCells =
+                Array.from(row.children)
+                    .filter(cell =>
+                        !cell.classList.contains(
+                            DETAILS_CLASS
+                        ) &&
+                        !cell.classList.contains(
+                            BENEFICIARY_CLASS
+                        )
+                    );
+
+            const approvalCell =
+                originalCells[
+                    approvalIndex
+                ];
+
+            if (!approvalCell) {
+                return;
+            }
+
+            const detailsCell =
+                approvalCell.cloneNode(false);
+
+            detailsCell.removeAttribute('id');
+            detailsCell.removeAttribute('name');
+            detailsCell.classList.add(
+                DETAILS_CLASS
+            );
+
+            const beneficiaryCell =
+                approvalCell.cloneNode(false);
+
+            beneficiaryCell.removeAttribute('id');
+            beneficiaryCell.removeAttribute('name');
+            beneficiaryCell.classList.add(
+                BENEFICIARY_CLASS
+            );
+
+            approvalCell.insertAdjacentElement(
+                'afterend',
+                detailsCell
+            );
+
+            detailsCell.insertAdjacentElement(
+                'afterend',
+                beneficiaryCell
+            );
+        });
+    }
+
+
+    function installRow(row) {
+        const approvalCell =
+            findApprovalCell(row);
+
+        if (!approvalCell) {
+            return;
+        }
+
+        let detailsCell =
+            row.querySelector(
+                'td.' + DETAILS_CLASS
+            );
+
+        let beneficiaryCell =
+            row.querySelector(
+                'td.' + BENEFICIARY_CLASS
+            );
+
+        if (!detailsCell) {
+            detailsCell =
+                approvalCell.cloneNode(false);
+
+            detailsCell.removeAttribute('id');
+            detailsCell.removeAttribute('name');
+            detailsCell.removeAttribute(
+                'data-element'
+            );
+            detailsCell.classList.add(
+                DETAILS_CLASS
+            );
+        }
+
+        if (!beneficiaryCell) {
+            beneficiaryCell =
+                approvalCell.cloneNode(false);
+
+            beneficiaryCell.removeAttribute('id');
+            beneficiaryCell.removeAttribute('name');
+            beneficiaryCell.removeAttribute(
+                'data-element'
+            );
+            beneficiaryCell.classList.add(
+                BENEFICIARY_CLASS
+            );
+        }
+
+        approvalCell.insertAdjacentElement(
+            'afterend',
+            detailsCell
+        );
+
+        detailsCell.insertAdjacentElement(
+            'afterend',
+            beneficiaryCell
+        );
+
+        if (
+            detailsCell.dataset.tmLoaded ===
+            'true'
+        ) {
+            return;
+        }
+
+        if (
+            detailsCell.dataset.tmQueued ===
+            'true'
+        ) {
+            return;
+        }
+
+        const ritmLink =
+            findRitmLink(row);
+
+        const ritm =
+            getRitmNumber(row);
+
+        if (!ritmLink) {
+            detailsCell.textContent =
+                'RITM not found';
+
+            beneficiaryCell.textContent =
+                'Not available';
+
+            return;
+        }
+
+        const ritmUrl =
+            buildRitmUrl(
+                ritmLink.href
+            );
+
+        if (!ritmUrl) {
+            detailsCell.textContent =
+                'Invalid RITM';
+
+            beneficiaryCell.textContent =
+                'Not available';
+
+            return;
+        }
+
+        detailsCell.dataset.tmQueued =
+            'true';
+
+        showLoading(
+            detailsCell,
+            beneficiaryCell,
+            ritm
+        );
+
+        requestQueue.push({
+            detailsCell,
+            beneficiaryCell,
+            ritm,
+            ritmUrl
+        });
+
+        processQueue();
+    }
+
+
+    // =========================================================
+    // QUEUE
+    // =========================================================
+
+    function processQueue() {
+        while (
+            activeRequests <
+                MAX_CONCURRENT_REQUESTS &&
+            requestQueue.length > 0
+        ) {
+            const job =
+                requestQueue.shift();
+
+            if (
+                !job.detailsCell.isConnected ||
+                !job.beneficiaryCell.isConnected
+            ) {
+                continue;
+            }
+
+            activeRequests++;
+
+            loadRitm(job.ritmUrl)
+                .then(result => {
+                    if (
+                        !job.detailsCell.isConnected
+                    ) {
+                        return;
+                    }
+
+                    showResult(
+                        job.detailsCell,
+                        job.beneficiaryCell,
+                        result
+                    );
+
+                    job.detailsCell.dataset.tmLoaded =
+                        'true';
+                })
+
+                .catch(error => {
+                    console.error(
+                        '[Request Details]',
+                        job.ritm,
+                        error
+                    );
+
+                    if (
+                        job.detailsCell.isConnected
+                    ) {
+                        showError(
+                            job.detailsCell,
+                            job.beneficiaryCell,
+                            error,
+                            job
+                        );
+                    }
+                })
+
+                .finally(() => {
+                    activeRequests--;
+                    processQueue();
+                });
+        }
+    }
+
+
+    // =========================================================
+    // TABLE SCANNING
+    // =========================================================
+
+    function getTable() {
+        return (
+            document.getElementById(
+                TABLE_ID
+            ) ||
+            document.querySelector(
+                'table[glide_table="sysapproval_approver"]'
+            )
+        );
+    }
+
+
+    function scan() {
+        const table =
+            getTable();
+
+        if (!table) {
+            return;
+        }
+
+        installStyles();
+        installHeaders(table);
+        installSearchColumns(table);
+
+        table.querySelectorAll(
+            'tbody tr.list_row'
+        )
+            .forEach(installRow);
+    }
+
+
+    function scheduleScan() {
+        clearTimeout(scanTimer);
+
+        scanTimer =
+            setTimeout(
+                scan,
+                300
+            );
+    }
+
+
+    function startObserver() {
+        if (observerStarted) {
+            return;
+        }
+
+        observerStarted = true;
+
+        const observer =
+            new MutationObserver(
+                mutations => {
+                    const relevant =
+                        mutations.some(
+                            mutation => {
+                                const target =
+                                    mutation.target;
+
+                                if (
+                                    target instanceof Element &&
+                                    target.closest(
+                                        '.' + DETAILS_CLASS +
+                                        ', .' + BENEFICIARY_CLASS
+                                    )
+                                ) {
+                                    return false;
+                                }
+
+                                return (
+                                    mutation.addedNodes.length > 0 ||
+                                    mutation.removedNodes.length > 0
+                                );
+                            }
+                        );
+
+                    if (relevant) {
+                        scheduleScan();
+                    }
+                }
+            );
+
+        observer.observe(
+            document.body,
+            {
+                childList: true,
+                subtree: true
+            }
+        );
+    }
+
+
+    // =========================================================
+    // START
+    // =========================================================
+
+    function start() {
+        scan();
+        startObserver();
+
+        setTimeout(scan, 700);
+        setTimeout(scan, 1500);
+        setTimeout(scan, 3000);
+        setTimeout(scan, 5000);
+    }
+
+
+    if (
+        document.readyState ===
+        'loading'
+    ) {
+        document.addEventListener(
+            'DOMContentLoaded',
+            start,
+            {
+                once: true
+            }
+        );
+
+    } else {
+        start();
+    }
+
+})();
